@@ -44,7 +44,10 @@ TREND_SYNONYMS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+# A leading '-' counts as a minus sign only when it does NOT follow a digit or a
+# dot. Otherwise "normal range 70-99" parses as 70 and MINUS 99, and "2026-06-15"
+# as 2026, -6, -15 — turning ordinary ranges and dates into phantom values.
+_NUMBER_RE = re.compile(r"(?<![\d.])-?\d[\d,]*(?:\.\d+)?")
 _MATCH_TOLERANCE = 1e-6
 
 # Numbers that are part of a UNIT rather than a measurement, and so can never be
@@ -60,6 +63,10 @@ class SpokenNumber:
     raw: str
     value: float
     is_percent: bool
+    # Offset in the source text. Carried so callers can read the words around a
+    # number; locating it later with text.find() would return the FIRST
+    # occurrence, which is the wrong one whenever a value repeats.
+    start: int = -1
 
 
 def extract_numbers(text: str) -> list[SpokenNumber]:
@@ -81,7 +88,11 @@ def extract_numbers(text: str) -> list[SpokenNumber]:
             continue
 
         tail = text[match.end() : match.end() + 1]
-        found.append(SpokenNumber(raw=raw, value=value, is_percent=tail == "%"))
+        found.append(
+            SpokenNumber(
+                raw=raw, value=value, is_percent=tail == "%", start=match.start()
+            )
+        )
     return found
 
 
@@ -145,6 +156,60 @@ def find_untraceable_numbers(text: str, allowed: set[float]) -> list[SpokenNumbe
         ):
             untraceable.append(spoken)
     return untraceable
+
+
+# Cues that mark a number as a GUIDELINE THRESHOLD rather than a claim about this
+# patient: "ideally >60", "target <100", "normal range 70-99".
+_REFERENCE_CUE_RE = re.compile(
+    r"(?:[<>]=?|[≤≥]|ideal(?:ly)?|target|goal|optimal|threshold|"
+    r"normal|reference|range|above|below|over|under|at least|no more than|"
+    r"less than|greater than|higher than|lower than)\s*[~about]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def split_untraceable(
+    text: str, allowed: set[float]
+) -> tuple[list[SpokenNumber], list[SpokenNumber]]:
+    """Separate untraceable numbers into patient claims vs guideline references.
+
+    These are different failures and conflating them corrupts the headline metric.
+
+        "her eGFR is 87"          -> a fabricated patient value. Critical.
+        "HDL 52 (ideally >60)"    -> an unverifiable guideline threshold recalled
+                                     from training. Worth surfacing, but not the
+                                     same thing as inventing a lab result.
+
+    Detection is by the text immediately preceding the number: a comparator or a
+    reference word ("ideally", "target", "normal range") means the number is
+    being quoted as a threshold, not asserted as this patient's measurement.
+
+    Returns ``(patient_values, reference_values)``.
+    """
+    patient: list[SpokenNumber] = []
+    reference: list[SpokenNumber] = []
+
+    for spoken in find_untraceable_numbers(text, allowed):
+        index = spoken.start
+        preceding = text[max(0, index - 28) : index] if index >= 0 else ""
+        if _has_reference_cue(preceding):
+            reference.append(spoken)
+        else:
+            patient.append(spoken)
+    return patient, reference
+
+
+# "130/80" is one blood-pressure expression, so a cue before the pair governs
+# both halves. Without this, "target ~130/80" reads 130 as a threshold and 80 as
+# a fabricated patient value.
+_PAIRED_VALUE_RE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*/\s*$")
+
+
+def _has_reference_cue(preceding: str) -> bool:
+    if _REFERENCE_CUE_RE.search(preceding):
+        return True
+    stripped = _PAIRED_VALUE_RE.sub("", preceding)
+    return stripped != preceding and _REFERENCE_CUE_RE.search(stripped) is not None
 
 
 def mentions_word(text: str, word: str) -> bool:

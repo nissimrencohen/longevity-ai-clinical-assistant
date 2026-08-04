@@ -13,7 +13,7 @@ __pycache__/
 logs/
 
 # Eval runs: every invocation writes a timestamped pair. Keep the curated ones
-# (latest.*, tier-b-initial.*) as committed evidence; ignore the rest.
+# (latest.*, tier-b-baseline.*) as committed evidence; ignore the rest.
 evals/results/20*.json
 evals/results/20*.md
 
