@@ -37,16 +37,42 @@ mcpSettings:
 # The MCP server. Three things must all be right or no tool ever fires:
 #   1. host.docker.internal — NOT localhost. Inside the container, localhost is
 #      the container itself, not your machine.
-#   2. The trailing slash on /mcp/ — streamable-HTTP is picky about it.
+#   2. NO trailing slash on /mcp. This is inverted from GUIDE.md's advice, which
+#      describes FastMCP 2.x. Under FastMCP 3.x the canonical path is /mcp and
+#      /mcp/ answers 307 -> /mcp. LibreChat's MCP client does not replay the
+#      Authorization header across that redirect, so it sees an unauthenticated
+#      response, reports "OAuth Required: true", and registers 0 tools — while
+#      still logging the server as successfully initialized. Verified against
+#      fastmcp 3.4.4 by probing both paths from inside the api container:
+#      /mcp/ -> 307, /mcp -> 200 with an mcp-session-id.
 #   3. The server must bind 0.0.0.0 (MCP_HOST in this repo's .env), or it is
 #      unreachable from outside its own process.
 # --------------------------------------------------------------------------
 mcpServers:
   longevity-clinical:
     type: streamable-http
-    url: http://host.docker.internal:9000/mcp/
+    url: http://host.docker.internal:9000/mcp
     headers:
       Authorization: 'Bearer ${MCP_BEARER_TOKEN}'
+
+    # REQUIRED with a statically bearer-authed MCP server, and non-obvious.
+    #
+    # At startup LibreChat runs detectOAuthRequirement() against the server URL.
+    # That probe deliberately sends NO configured headers, so FastMCP answers 401
+    # with a `WWW-Authenticate: Bearer` challenge. LibreChat reads the challenge as
+    # "this server speaks OAuth", sets requiresOAuth=true, and from then on treats
+    # the server as OAuth-gated — so it never sends the static Authorization header
+    # above, discovers 0 tools, and still logs the server as initialized.
+    #
+    # Setting requiresOAuth explicitly short-circuits that detection
+    # (MCPServerInspector.detectOAuth returns early when it is already set), so the
+    # static header is used as intended.
+    #
+    # Symptom if you remove this: "Initialized with 1 configured server and 0 tools"
+    # plus "OAuth Required: true", while the MCP server's own log shows a HEAD and
+    # a POST both answered 401.
+    requiresOAuth: false
+
     # get_current_risks fans out to five models; 60s is generous but bounded.
     timeout: 60000
 
