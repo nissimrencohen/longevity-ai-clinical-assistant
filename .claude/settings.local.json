@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker --version)",
+      "WebSearch",
+      "WebFetch(domain:jlowin.dev)",
+      "WebFetch(domain:gofastmcp.com)",
+      "WebFetch(domain:www.librechat.ai)"
+    ]
+  }
+}
