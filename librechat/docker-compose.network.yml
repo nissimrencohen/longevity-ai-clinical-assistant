@@ -1,0 +1,45 @@
+# OPTIONAL overlay for LibreChat's deploy-compose.yml.
+#
+# Attaches LibreChat's api container to this project's private network so it can
+# reach the MCP server by SERVICE NAME:
+#
+#     http://mcp:9000/mcp        instead of      http://host.docker.internal:9100/mcp
+#
+# Why bother: with this in place the MCP server needs no published host port at
+# all, which removes the entire class of failure that bit this stack once
+# already - an unrelated QuestDB container had taken port 9000, and LibreChat
+# happily connected to it and reported "Failed to initialize MCP server".
+# Container-to-container traffic on a private bridge cannot collide with
+# anything on the host.
+#
+# USE IT:
+#   1. Bring this project up first, so the network exists:
+#        docker compose up -d                       # in the assignment repo
+#   2. Point librechat.yaml at the service name (see the commented block in
+#      librechat/librechat.yaml):
+#        url: http://mcp:9000/mcp
+#      and drop the mcpSettings.allowedAddresses entry - a container hostname on
+#      a shared network is not a private-IP SSRF target, so the exemption is no
+#      longer needed.
+#   3. Start LibreChat with both files:
+#        docker compose -f deploy-compose.yml \
+#                       -f <this-repo>/librechat/docker-compose.network.yml up -d
+#
+# NOT using it is fine. The default configuration reaches the MCP server over
+# host.docker.internal on the published port, which is what the committed
+# librechat.yaml is set up for and what has been verified end to end.
+
+services:
+  api:
+    networks:
+      # `default` keeps LibreChat's own services (mongodb, meilisearch, rag_api)
+      # reachable; dropping it would isolate the api container from its database.
+      - default
+      - longevity
+
+networks:
+  longevity:
+    # Created by the assignment repo's docker-compose.yml. `external: true` means
+    # compose will not try to create it - bring that stack up first.
+    name: longevity-net
+    external: true

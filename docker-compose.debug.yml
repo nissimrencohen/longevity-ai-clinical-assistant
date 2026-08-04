@@ -1,0 +1,24 @@
+# Debug overlay: publish the internal services to the host.
+#
+#     docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d --wait
+#     make up-debug
+#
+# The default stack deliberately publishes nothing but the MCP port, which is
+# what makes it immune to host port collisions. That isolation has one cost worth
+# knowing about: backend/tests/test_mlflow_integration.py talks to
+# http://127.0.0.1:5001/invocations, so under the default stack those four tests
+# auto-skip and you silently lose the coverage that proves the model server is
+# really returning probabilities rather than class labels.
+#
+# This overlay re-publishes them so that suite runs against the containers. Use
+# it for debugging and for the full test run; do not leave it on, or you are back
+# to competing for host ports with everything else on the machine.
+
+services:
+  backend:
+    ports:
+      - "${BACKEND_PUBLISH_PORT:-8001}:8001"
+
+  mlflow:
+    ports:
+      - "${MLFLOW_PUBLISH_PORT:-5001}:5001"

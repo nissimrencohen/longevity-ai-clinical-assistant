@@ -2,7 +2,7 @@
 # Ports: backend 8001 · MLflow 5001 · MCP 9000 · LibreChat 3080 (Docker).
 
 .PHONY: help install data db models register backend mcp mlflow test test-unit \
-        eval eval-agent eval-all lint
+        eval eval-agent eval-all lint up down logs ps rebuild
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -48,3 +48,25 @@ eval-all:  ## Run both eval tiers
 
 lint:  ## Lint with ruff
 	uv run ruff check .
+
+# --- Containerised stack (recommended) --------------------------------------
+# The three services run on a private network and restart automatically. Only
+# the MCP port is published, for the eval harness and LibreChat.
+
+up:  ## Start the whole stack in Docker
+	docker compose up -d --wait
+
+up-debug:  ## Start the stack with backend + MLflow also published to the host
+	docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d --wait
+
+down:  ## Stop the stack
+	docker compose down
+
+rebuild:  ## Rebuild images and restart (after changing code or models)
+	docker compose up -d --build --wait
+
+ps:  ## Show container status and health
+	docker compose ps
+
+logs:  ## Tail logs from all services
+	docker compose logs -f --tail=100

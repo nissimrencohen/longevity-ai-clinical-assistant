@@ -71,13 +71,32 @@ The MLflow/MCP/LibreChat wiring is real, but it's glue — don't let it eat your
   more relevant to the role than a polished chat UI.
 
 ## Quickstart
+
+**Docker (recommended)** — brings up all three services on a private network,
+with healthchecks and `restart: always`:
+
+```bash
+cp .env.example .env
+docker compose up -d --wait
+```
+
+**Host mode** — for fast iteration and debugging:
+
 ```bash
 uv sync            # Python 3.10–3.13; creates .venv
 cp .env.example .env
 make data          # (re)generate the DB + models — already committed, just to prove it runs
-make backend       # boots on :8001; /health works, endpoints 501 until you implement them
+powershell -ExecutionPolicy Bypass -File scripts/run_stack.ps1   # all three services
 ```
-Then follow [`GUIDE.md`](GUIDE.md) for MLflow, MCP, and LibreChat.
+
+Both modes are documented in [`COMPOSE.md`](COMPOSE.md). Then wire up LibreChat
+per [`librechat/SETUP.md`](librechat/SETUP.md).
+
+Verify either mode with the deterministic eval tier (no API key needed):
+
+```bash
+uv run python evals/harness.py --tier a
+```
 
 > 🔑 **OpenRouter:** you need a free account + API key. Pick a model that supports
 > **function/tool calling**, or the agent will answer without ever calling your tools

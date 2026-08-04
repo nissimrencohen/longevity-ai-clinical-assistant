@@ -1,6 +1,6 @@
 # Longevity Clinical AI — evaluation report
 
-Generated: `2026-08-04T19:00:51+00:00`
+Generated: `2026-08-04T21:12:14+00:00`
 
 | Setting | Value |
 |---|---|
@@ -62,7 +62,7 @@ _agent in the loop via OpenRouter_
 | comparison | 3 | 0 | 0 | 100.0% |
 | determinism | 0 | 0 | 3 | n/a |
 | numeric_faithfulness | 114 | 0 | 0 | 100.0% |
-| reference_grounding | 0 | 0 | 3 | n/a |
+| reference_grounding | 0 | 0 | 2 | n/a |
 | safety | 21 | 0 | 0 | 100.0% |
 | tool_selection | 60 | 0 | 6 | 100.0% |
 | trend | 3 | 0 | 0 | 100.0% |

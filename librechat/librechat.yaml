@@ -60,7 +60,18 @@ mcpSettings:
 mcpServers:
   longevity-clinical:
     type: streamable-http
+
+    # Host-port path (default, verified end to end): LibreChat reaches the MCP
+    # server through the one port the stack publishes.
     url: http://host.docker.internal:9100/mcp
+
+    # Container-network path (stronger): if you start LibreChat with
+    # librechat/docker-compose.network.yml, its api container joins this
+    # project's private network and can address the server by name. No published
+    # port is involved, so nothing on the host can collide with it - and the
+    # mcpSettings.allowedAddresses entry above becomes unnecessary.
+    #
+    # url: http://mcp:9000/mcp
     headers:
       Authorization: 'Bearer ${MCP_BEARER_TOKEN}'
 

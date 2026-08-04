@@ -1,0 +1,118 @@
+# Longevity clinical assistant - the three services that were previously host
+# processes.
+#
+#     docker compose up -d
+#
+# Network isolation is the point. The services address each other by SERVICE
+# NAME on a private bridge network (backend:8001, mlflow:5001, mcp:9000), so
+# nothing they say to each other touches a host port. Two host processes on this
+# machine were killed by their launching shell, and an unrelated QuestDB
+# container silently took port 9000; neither failure mode can reach this stack.
+#
+# Exactly ONE host port is published, and only because the eval harness and the
+# LibreChat container are outside this network:
+#
+#     ${MCP_PUBLISH_PORT:-9100} -> mcp:9000
+#
+# Even that is avoidable: attach LibreChat to the `longevity-net` network (see
+# librechat/docker-compose.network.yml) and it reaches http://mcp:9000/mcp with
+# no published port at all. Set MCP_PUBLISH_PORT to move it, or use the
+# `no-publish` profile note in COMPOSE.md to drop it entirely.
+
+name: longevity
+
+x-service-defaults: &defaults
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: longevity-clinical:latest
+  restart: always
+  networks: [longevity]
+  environment:
+    # Service-name addressing. These override the repo .env, which points at
+    # 127.0.0.1 for host mode.
+    BACKEND_URL: http://backend:8001
+    MLFLOW_URL: http://mlflow:5001/invocations
+    MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-dev-longevity-token-change-me}
+
+services:
+  # The five risk models behind one pyfunc router that returns probabilities
+  # rather than class labels. The artefact is baked into the image at build time
+  # (see Dockerfile), so models/ is deliberately NOT mounted.
+  mlflow:
+    <<: *defaults
+    container_name: longevity-mlflow
+    command:
+      - mlflow
+      - models
+      - serve
+      - --model-uri
+      - models/mlflow_risk_router
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5001"
+      - --env-manager
+      - local
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py", "http://127.0.0.1:5001/ping", "200"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  backend:
+    <<: *defaults
+    container_name: longevity-backend
+    command:
+      - uvicorn
+      - backend.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    volumes:
+      # The risks table is an append log the backend writes to on every request,
+      # so the database is a bind mount: it survives rebuilds and stays visible
+      # to host tooling (pytest, `make db`) rather than hiding in a volume.
+      - ./data:/app/data
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py", "http://127.0.0.1:8001/health", "200"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  mcp:
+    <<: *defaults
+    container_name: longevity-mcp
+    command:
+      - python
+      - mcp-server/server.py
+    environment:
+      BACKEND_URL: http://backend:8001
+      MLFLOW_URL: http://mlflow:5001/invocations
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-dev-longevity-token-change-me}
+      MCP_HOST: 0.0.0.0
+      # Inside the network the natural port is fine; the host mapping below is
+      # what avoids collisions with whatever else is running on this machine.
+      MCP_PORT: "9000"
+    ports:
+      - "${MCP_PUBLISH_PORT:-9100}:9000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      # 401 is the healthy answer - see scripts/healthcheck.py.
+      test: ["CMD", "python", "scripts/healthcheck.py", "http://127.0.0.1:9000/mcp", "401"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+networks:
+  longevity:
+    name: longevity-net
