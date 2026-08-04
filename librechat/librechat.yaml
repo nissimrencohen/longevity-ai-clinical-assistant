@@ -28,10 +28,19 @@ cache: true
 # service while leaving default SSRF protection intact everywhere else. That is
 # preferable to `allowedDomains`, which flips the whole system into strict
 # whitelist mode and would then block every public destination not also listed.
+#
+# PORT 9100, NOT 9000. GUIDE.md pins the MCP server to 9000, but that port is
+# claimed on this machine by an unrelated QuestDB container
+# (vix_questdb publishes 0.0.0.0:9000->9000/tcp) which Docker restarts
+# automatically. The symptom is nasty: the port is occupied, so a naive
+# "is something listening?" check passes, but LibreChat talks to QuestDB and
+# reports "Failed to initialize MCP server". Moving our server is the
+# non-invasive fix - the port map exists to dodge collisions, and this is one.
+# Keep this in sync with MCP_PORT in the repo-root .env.
 # --------------------------------------------------------------------------
 mcpSettings:
   allowedAddresses:
-    - 'host.docker.internal:9000'
+    - 'host.docker.internal:9100'
 
 # --------------------------------------------------------------------------
 # The MCP server. Three things must all be right or no tool ever fires:
@@ -51,7 +60,7 @@ mcpSettings:
 mcpServers:
   longevity-clinical:
     type: streamable-http
-    url: http://host.docker.internal:9000/mcp
+    url: http://host.docker.internal:9100/mcp
     headers:
       Authorization: 'Bearer ${MCP_BEARER_TOKEN}'
 
