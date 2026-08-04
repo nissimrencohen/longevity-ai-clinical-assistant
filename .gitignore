@@ -12,6 +12,11 @@ __pycache__/
 # Runtime logs from scripts/run_stack.ps1
 logs/
 
+# Eval runs: every invocation writes a timestamped pair. Keep the curated ones
+# (latest.*, tier-b-initial.*) as committed evidence; ignore the rest.
+evals/results/20*.json
+evals/results/20*.md
+
 # MLflow — local tracking store and the registered router model artefacts.
 # models/mlflow_risk_router/ is generated from the committed pickles by
 # `make register`, so it is reproducible rather than source.

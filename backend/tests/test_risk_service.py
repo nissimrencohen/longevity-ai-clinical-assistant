@@ -105,7 +105,28 @@ async def test_non_probability_response_is_rejected(risk_service_returns_labels)
 # ---------------------------------------------------------------------------
 
 
+def _clear_computed_rows(patient_id: str) -> None:
+    """Drop previously-computed rows, keeping the seeded history.
+
+    Establishes the "never scored" precondition explicitly. The fixture DB is a
+    copy of the shipped one, and that file legitimately accumulates rows whenever
+    anyone runs the stack or the eval harness against it — so a test that assumed
+    a pristine append log was quietly depending on nobody having used the app.
+    Seeded history rows have inputs_json NULL; ours always set it.
+    """
+    con = sqlite3.connect(settings.patient_db_path)
+    try:
+        con.execute(
+            "DELETE FROM risks WHERE patient_id = ? AND inputs_json IS NOT NULL",
+            (patient_id,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
 async def test_first_call_appends_one_row_per_risk(risk_service) -> None:
+    _clear_computed_rows("P002")
     before = _count_rows("P002")
     response = await risk_service.get_current_risks("P002")
     after = _count_rows("P002")

@@ -1,7 +1,8 @@
 # Convenience targets. Each long-running service wants its own terminal.
 # Ports: backend 8001 · MLflow 5001 · MCP 9000 · LibreChat 3080 (Docker).
 
-.PHONY: help install data db models register backend mcp mlflow test test-unit eval lint
+.PHONY: help install data db models register backend mcp mlflow test test-unit \
+        eval eval-agent eval-all lint
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -36,8 +37,14 @@ test:  ## Run all tests (MLflow integration tests auto-skip if :5001 is down)
 test-unit:  ## Run only the hermetic tests — no services required
 	uv run pytest -m "not integration"
 
-eval:  ## Run your evaluation harness (you build evals/harness.py)
-	uv run python evals/harness.py
+eval:  ## Run the deterministic eval tier (no API key needed) — the regression gate
+	uv run python evals/harness.py --tier a
+
+eval-agent:  ## Run the agent-in-the-loop eval tier (needs OPENROUTER_KEY)
+	uv run python evals/harness.py --tier b --repeats 3
+
+eval-all:  ## Run both eval tiers
+	uv run python evals/harness.py --tier both --repeats 3
 
 lint:  ## Lint with ruff
 	uv run ruff check .
