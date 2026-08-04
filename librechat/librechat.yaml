@@ -1,0 +1,80 @@
+# LibreChat configuration for the Longevity clinical assistant.
+#
+# Pinned LibreChat release: v0.8.7 (2026-06-24)
+# Config schema version: 1.3.13 — matches that release.
+#
+# INSTALL: copy this file into the root of your LibreChat checkout (next to
+# deploy-compose.yml), which mounts ./librechat.yaml into the api container:
+#
+#     cp <this-repo>/librechat/librechat.yaml <librechat-checkout>/librechat.yaml
+#
+# Two variables are interpolated from LibreChat's OWN .env at container start:
+#   OPENROUTER_KEY    — your OpenRouter API key
+#   MCP_BEARER_TOKEN  — must equal this repo's .env value, or the MCP server 401s
+# See librechat/env.notes.md.
+
+version: 1.3.13
+cache: true
+
+# --------------------------------------------------------------------------
+# SSRF allowlist — the #1 reason a "connected" MCP server never fires.
+#
+# LibreChat blocks requests to private address space by default. Our MCP server
+# runs on the host while LibreChat runs in a container, so the connection is
+# host.docker.internal -> private IP, which is exactly what that block catches.
+#
+# `allowedAddresses` is the narrow exemption: it takes host:port pairs only
+# (never URLs, bare hosts, or CIDR ranges) and re-permits that one private
+# service while leaving default SSRF protection intact everywhere else. That is
+# preferable to `allowedDomains`, which flips the whole system into strict
+# whitelist mode and would then block every public destination not also listed.
+# --------------------------------------------------------------------------
+mcpSettings:
+  allowedAddresses:
+    - 'host.docker.internal:9000'
+
+# --------------------------------------------------------------------------
+# The MCP server. Three things must all be right or no tool ever fires:
+#   1. host.docker.internal — NOT localhost. Inside the container, localhost is
+#      the container itself, not your machine.
+#   2. The trailing slash on /mcp/ — streamable-HTTP is picky about it.
+#   3. The server must bind 0.0.0.0 (MCP_HOST in this repo's .env), or it is
+#      unreachable from outside its own process.
+# --------------------------------------------------------------------------
+mcpServers:
+  longevity-clinical:
+    type: streamable-http
+    url: http://host.docker.internal:9000/mcp/
+    headers:
+      Authorization: 'Bearer ${MCP_BEARER_TOKEN}'
+    # get_current_risks fans out to five models; 60s is generous but bounded.
+    timeout: 60000
+
+endpoints:
+  agents:
+    # The built-in agent is what calls the MCP tools.
+    capabilities: ['tools', 'actions']
+    recursionLimit: 25
+
+  custom:
+    - name: 'OpenRouter'
+      apiKey: '${OPENROUTER_KEY}'
+      baseURL: 'https://openrouter.ai/api/v1'
+      models:
+        # These IDs were verified against the live OpenRouter models API and all
+        # advertise `tools` support. Picking a model WITHOUT tool support is
+        # GUIDE trap #4: the agent answers fluently and never calls your tools,
+        # which looks like an MCP failure but is not.
+        default:
+          - 'anthropic/claude-haiku-4.5'
+          - 'anthropic/claude-sonnet-4.5'
+          - 'openai/gpt-4o-mini'
+          - 'openai/gpt-4.1-mini'
+          - 'google/gemini-2.5-flash'
+        fetch: true
+      titleConvo: true
+      titleModel: 'openai/gpt-4o-mini'
+      # OpenRouter models use a variety of stop tokens; passing `stop` through
+      # causes provider-side errors.
+      dropParams: ['stop']
+      modelDisplayLabel: 'OpenRouter'

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+.env
+
+# MLflow — local tracking store and the registered router model artefacts.
+# models/mlflow_risk_router/ is generated from the committed pickles by
+# `make register`, so it is reproducible rather than source.
+mlruns/
+mlartifacts/
+mlflow.db
+models/mlflow_risk_router/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db

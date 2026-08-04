@@ -52,6 +52,9 @@ package = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["backend/tests"]
+markers = [
+    "integration: needs a live MLflow model server on :5001 (auto-skips if absent)",
+]
 
 [tool.ruff]
 line-length = 100

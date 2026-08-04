@@ -1,17 +1,17 @@
 """Acceptance tests for the clinical API.
 
-``test_health`` passes as soon as the scaffold runs. The rest are skipped —
-remove the ``@pytest.mark.skip`` decorators as you implement each endpoint and
-make them pass. They double as the spec for what "done" means.
+These are the four tests the assignment ships as its acceptance spec, with the
+``@pytest.mark.skip`` decorators removed. Their bodies are unchanged.
+
+The model server is mocked at the HTTP layer (see ``conftest.py``) but computes
+from the real pickles, so the probabilities asserted here are the same numbers a
+live MLflow router returns. ``test_mlflow_integration.py`` covers the live wiring.
 
 Run:  uv run pytest
-Note: the risk tests assume the MLflow model server is running (see GUIDE.md),
-since get_current_risks calls it. Feel free to mock it instead.
 """
 
 from __future__ import annotations
 
-import pytest
 from httpx import AsyncClient
 
 RISK_CODES = {"CVD", "T2DM", "CKD", "CLD", "DEMENTIA"}
@@ -24,7 +24,6 @@ async def test_health(client: AsyncClient) -> None:
     assert r.json()["status"] == "ok"
 
 
-@pytest.mark.skip(reason="Implement get_current_biomarkers, then remove this skip.")
 async def test_biomarkers_known_patient(client: AsyncClient) -> None:
     r = await client.get("/api/v1/get_current_biomarkers", params={"patient_id": "P001"})
     assert r.status_code == 200
@@ -34,13 +33,11 @@ async def test_biomarkers_known_patient(client: AsyncClient) -> None:
     assert body["biomarkers"]["egfr_ml_min_1_73m2"] == 102
 
 
-@pytest.mark.skip(reason="Implement the 404 path, then remove this skip.")
 async def test_unknown_patient_returns_404(client: AsyncClient) -> None:
     r = await client.get("/api/v1/get_current_biomarkers", params={"patient_id": "NOPE"})
     assert r.status_code == 404
 
 
-@pytest.mark.skip(reason="Implement get_current_risks, then remove this skip.")
 async def test_risks_returns_five_bands(client: AsyncClient) -> None:
     r = await client.get("/api/v1/get_current_risks", params={"patient_id": "P004"})
     assert r.status_code == 200
@@ -54,7 +51,6 @@ async def test_risks_returns_five_bands(client: AsyncClient) -> None:
     assert ckd["risk_band"] == "high"
 
 
-@pytest.mark.skip(reason="Implement the risks append, then remove this skip.")
 async def test_risks_are_appended(client: AsyncClient) -> None:
     """Calling get_current_risks should persist today's values to the risks log."""
     import sqlite3
@@ -72,3 +68,51 @@ async def test_risks_are_appended(client: AsyncClient) -> None:
 
     await client.get("/api/v1/get_current_risks", params={"patient_id": "P002"})
     assert row_count() >= 5
+
+
+# ---------------------------------------------------------------------------
+# Additional endpoint-level cases (mine).
+# ---------------------------------------------------------------------------
+
+
+async def test_unknown_patient_risks_returns_404(client: AsyncClient) -> None:
+    """The safety-critical path: P999 must 404, never a fabricated risk panel.
+
+    Mirrors the `safety-unknown-p999` eval case — if this leaks a 200 with an
+    empty risk list, the assistant has a template to hallucinate into.
+    """
+    r = await client.get("/api/v1/get_current_risks", params={"patient_id": "P999"})
+    assert r.status_code == 404
+    assert "P999" in r.json()["detail"]
+
+
+async def test_model_server_down_returns_502(client_no_model_server: AsyncClient) -> None:
+    """An unreachable model server must surface as 502, not a default probability."""
+    r = await client_no_model_server.get(
+        "/api/v1/get_current_risks", params={"patient_id": "P001"}
+    )
+    assert r.status_code == 502
+
+
+async def test_biomarkers_reports_age_at_clinic_today(client: AsyncClient) -> None:
+    """Age is derived against the fixed clinic date, not the wall clock."""
+    r = await client.get("/api/v1/get_current_biomarkers", params={"patient_id": "P004"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "Avraham Friedman"
+    assert body["age_years"] == 72  # 1954-02-18 at 2026-07-09
+    assert body["sex"] == "male"
+
+
+async def test_every_patient_scores_all_five_risks(client: AsyncClient) -> None:
+    """All eight patients score without error — the NULL-input regression, end to end.
+
+    Before `gestational_diabetes` was coalesced, this failed for exactly the four
+    male patients (NaN into sklearn).
+    """
+    for pid in ("P001", "P002", "P003", "P004", "P005", "P006", "P007", "P008"):
+        r = await client.get("/api/v1/get_current_risks", params={"patient_id": pid})
+        assert r.status_code == 200, f"{pid} failed: {r.text}"
+        risks = r.json()["risks"]
+        assert {x["risk_code"] for x in risks} == RISK_CODES
+        assert all(0.0 <= x["probability"] <= 1.0 for x in risks)

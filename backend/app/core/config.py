@@ -26,5 +26,9 @@ class Settings(BaseSettings):
     # Default assumes you serve the router model on host port 5001.
     mlflow_url: str = "http://127.0.0.1:5001/invocations"
 
+    # Per-request timeout for model-server calls, in seconds (env: MLFLOW_TIMEOUT_S).
+    # The five calls run concurrently, so this bounds the whole risk panel, not 5x it.
+    mlflow_timeout_s: float = 10.0
+
 
 settings = Settings()

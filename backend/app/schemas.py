@@ -51,6 +51,21 @@ class RiskResult(BaseModel):
     time_horizon_years: int | None = None
     computed_at: str
 
+    # Fingerprint of the exact feature payload scored (model name + version +
+    # features). Ties this number to its audit row in `risks.inputs_json`.
+    inputs_hash: str | None = None
+
+    # False when the dedupe rule skipped the append because the inputs were
+    # unchanged since the last stored row. The probability is still freshly
+    # computed — this only reports whether the log grew.
+    persisted: bool = True
+
+    # Direction of travel vs. the previous stored point. Provided explicitly so
+    # the assistant reports a trend rather than eyeballing one from the series.
+    trend_direction: str | None = Field(
+        default=None, examples=["worsening", "improving", "stable", "insufficient_history"]
+    )
+
 
 class RiskTrendPoint(BaseModel):
     computed_at: str
