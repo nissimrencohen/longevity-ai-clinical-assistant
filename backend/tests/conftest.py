@@ -111,10 +111,85 @@ def label_transport() -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
+class FakeCache:
+    """In-memory stand-in for Redis, so cache SEMANTICS are tested without a server.
+
+    What matters here is the contract (content-addressed keys, provenance on a
+    hit), not Redis itself — and a test that needs a running service is a test
+    that gets skipped.
+    """
+
+    def __init__(self) -> None:
+        self.store: dict[str, dict] = {}
+
+    async def get(self, key: str) -> dict | None:
+        return self.store.get(key)
+
+    async def set(self, key: str, value: dict) -> None:
+        self.store[key] = value
+
+    async def close(self) -> None:
+        return None
+
+
+class BrokenCache:
+    """Every operation fails — mirrors Redis being down.
+
+    RedisCache swallows its own errors, so this asserts the SERVICE stays correct
+    when the cache is useless: degrade latency, never availability.
+    """
+
+    async def get(self, key: str) -> dict | None:
+        raise RuntimeError("redis unreachable")
+
+    async def set(self, key: str, value: dict) -> None:
+        raise RuntimeError("redis unreachable")
+
+    async def close(self) -> None:
+        return None
+
+
+class _SafeBrokenCache(BrokenCache):
+    """BrokenCache behind the same fail-open guard RedisCache uses."""
+
+    async def get(self, key: str) -> dict | None:
+        try:
+            return await super().get(key)
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def set(self, key: str, value: dict) -> None:
+        try:
+            await super().set(key, value)
+        except Exception:  # noqa: BLE001
+            return None
+
+
 @pytest_asyncio.fixture
 async def risk_service(mlflow_transport) -> RiskService:
     async with httpx.AsyncClient(transport=mlflow_transport) as http:
         yield RiskService(MLflowRiskClient(http, "http://model-server/invocations"))
+
+
+@pytest_asyncio.fixture
+async def risk_service_cached(mlflow_transport) -> tuple[RiskService, FakeCache]:
+    cache = FakeCache()
+    async with httpx.AsyncClient(transport=mlflow_transport) as http:
+        yield (
+            RiskService(
+                MLflowRiskClient(http, "http://model-server/invocations"), cache=cache
+            ),
+            cache,
+        )
+
+
+@pytest_asyncio.fixture
+async def risk_service_broken_cache(mlflow_transport) -> RiskService:
+    async with httpx.AsyncClient(transport=mlflow_transport) as http:
+        yield RiskService(
+            MLflowRiskClient(http, "http://model-server/invocations"),
+            cache=_SafeBrokenCache(),
+        )
 
 
 @pytest_asyncio.fixture

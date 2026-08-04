@@ -17,24 +17,37 @@ from fastapi import FastAPI
 
 from .api.v1.endpoints import router as v1_router
 from .core.config import settings
+from .db.store import build_store
+from .services.cache import build_cache
 from .services.mlflow_client import MLflowRiskClient
 from .services.risk import RiskService
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Own the HTTP client for the process lifetime.
+    """Own the pooled resources for the process lifetime.
 
-    One pooled client shared by every request, rather than one per request: the
-    five model calls per question reuse warm connections instead of re-running a
-    TCP handshake each time.
+    One HTTP client, one database engine and one cache connection shared by every
+    request. Creating them per request throws away pooling — the usual reason
+    "async" code turns out slow — and for Postgres would mean a TCP handshake and
+    an auth round trip on every question.
     """
-    async with httpx.AsyncClient(timeout=settings.mlflow_timeout_s) as http:
-        app.state.http_client = http
-        app.state.risk_service = RiskService(
-            MLflowRiskClient(http, settings.mlflow_url)
-        )
-        yield
+    store = build_store()
+    cache = build_cache()
+    try:
+        async with httpx.AsyncClient(timeout=settings.mlflow_timeout_s) as http:
+            app.state.http_client = http
+            app.state.store = store
+            app.state.cache = cache
+            app.state.risk_service = RiskService(
+                MLflowRiskClient(http, settings.mlflow_url),
+                store=store,
+                cache=cache,
+            )
+            yield
+    finally:
+        await cache.close()
+        await store.close()
 
 
 def create_app() -> FastAPI:
@@ -43,7 +56,14 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:
-        return {"status": "ok", "service": settings.app_name}
+        # Reports which data layer is live, so a misconfigured deployment is
+        # visible from the healthcheck rather than from surprising results.
+        return {
+            "status": "ok",
+            "service": settings.app_name,
+            "db_backend": settings.db_backend,
+            "cache_backend": settings.cache_backend,
+        }
 
     return app
 

@@ -22,3 +22,14 @@ services:
   mlflow:
     ports:
       - "${MLFLOW_PUBLISH_PORT:-5001}:5001"
+
+  # For psql / redis-cli against the running stack. Ports are non-default on
+  # purpose: 5432 and 6379 are the two most contended ports on any developer
+  # machine, and this project has already lost an afternoon to a port collision.
+  postgres:
+    ports:
+      - "${POSTGRES_PUBLISH_PORT:-55432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_PUBLISH_PORT:-56379}:6379"

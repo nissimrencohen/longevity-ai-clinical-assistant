@@ -20,6 +20,13 @@ dependencies = [
     "scikit-learn>=1.4",        # the provided models are sklearn LogisticRegression objects
     "numpy>=1.26",
     "pandas>=2.2",              # MLflow /invocations dataframe payloads
+    # --- Data layer (Phase 3) ---
+    # SQLite remains the DEFAULT backend so a fresh clone behaves exactly as the
+    # assignment describes; Postgres is opt-in via DB_BACKEND=postgres.
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",            # async Postgres driver
+    "alembic>=1.13",            # schema migrations
+    "redis>=5.0",               # risk cache (opt-in via CACHE_BACKEND=redis)
 ]
 
 [project.optional-dependencies]

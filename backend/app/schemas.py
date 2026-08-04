@@ -66,6 +66,11 @@ class RiskResult(BaseModel):
         default=None, examples=["worsening", "improving", "stable", "insufficient_history"]
     )
 
+    # Where this number came from. On a cache hit `computed_at` is the ORIGINAL
+    # computation time, not the time of this request — presenting an old value as
+    # freshly computed is a provenance problem, not a performance one.
+    source: str = Field(default="fresh", examples=["fresh", "cache"])
+
 
 class RiskTrendPoint(BaseModel):
     computed_at: str

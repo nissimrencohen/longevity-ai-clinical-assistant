@@ -40,12 +40,62 @@ make rebuild   # after changing code or regenerating models
 
 | Service | Internal address | Published |
 |---|---|---|
+| `postgres` | `postgres:5432` | no |
+| `redis` | `redis:6379` | no |
 | `mlflow` | `mlflow:5001` | no |
 | `backend` | `backend:8001` | no |
 | `mcp` | `mcp:9000` | `${MCP_PUBLISH_PORT:-9100}` -> 9000 |
+| `seed` | one-shot | — |
 
-All three carry `restart: always` and a healthcheck, and start in dependency
-order (`mlflow` healthy -> `backend` healthy -> `mcp`).
+Everything carries `restart: always` (except the one-shot seed) and a
+healthcheck, and starts in dependency order:
+
+```
+postgres healthy ─▶ seed completed ─┐
+redis    healthy ───────────────────┼─▶ backend healthy ─▶ mcp
+mlflow   healthy ───────────────────┘
+```
+
+`backend` waits on `seed` with `condition: service_completed_successfully`, so
+the API can never come up against an empty or half-migrated database.
+
+### The data layer
+
+**Postgres replaces SQLite as the live clinical database** in the containerised
+stack. Not for its own sake — two concrete reasons:
+
+* The risk endpoint **writes on every request**. SQLite takes a database-wide
+  write lock, so two doctors asking about two *different* patients serialise.
+* The dedupe rule ("append only when the inputs changed") is a read-then-write
+  race under SQLite. In Postgres it is a partial unique index over
+  `(patient_id, model_name, inputs_hash)`, so the append becomes a single atomic
+  `INSERT ... ON CONFLICT DO NOTHING` and concurrent duplicates cannot both land.
+
+**Redis caches risk results, keyed on the feature payload hash** — not on
+`patient_id`. The models are deterministic and pure, so identical inputs imply an
+identical probability: a hit cannot serve a *wrong* answer. And because the hash
+covers the model name and version, re-registering a model invalidates its cached
+results automatically. It is the same hash the dedupe uses — one primitive, two
+requirements.
+
+What a cache *can* get wrong is provenance, so a hit is labelled: `source:
+"cache"` and `computed_at` is the **original** computation time, never the
+request time. The cache also fails open — if Redis is down, the request
+recomputes rather than failing.
+
+**Both default to OFF outside Docker.** `DB_BACKEND=sqlite` and
+`CACHE_BACKEND=none` are the defaults in `Settings`, so a fresh clone runs
+`pytest` and host mode with no services at all, exactly as the assignment
+describes. The compose file sets `DB_BACKEND=postgres` and `CACHE_BACKEND=redis`.
+`/health` reports which pair is live, so a misconfigured deployment is visible
+from the healthcheck rather than from surprising results.
+
+**Migrations** are Alembic (`migrations/`), run by the one-shot `seed` service,
+which then loads the shipped SQLite fixture into Postgres. `data/generate_db.py`
+stays the canonical definition of the mock clinic and is untouched — regenerating
+it and re-running the seed is the supported way to reset. The seed is idempotent
+and only copies the *seeded history* rows, so a reseed cannot resurrect deleted
+results or duplicate a trend.
 
 ### Why only one published port
 

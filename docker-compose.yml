@@ -34,8 +34,63 @@ x-service-defaults: &defaults
     BACKEND_URL: http://backend:8001
     MLFLOW_URL: http://mlflow:5001/invocations
     MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-dev-longevity-token-change-me}
+    POSTGRES_DSN: postgresql+asyncpg://${POSTGRES_USER:-clinic}:${POSTGRES_PASSWORD:-clinic}@postgres:5432/${POSTGRES_DB:-clinic}
+    REDIS_URL: redis://redis:6379/0
 
 services:
+  # The clinical database. Postgres rather than SQLite for two concrete reasons,
+  # not for its own sake: the risk endpoint WRITES on every request (SQLite takes
+  # a database-wide lock, so two doctors asking about two different patients
+  # serialise), and the dedupe rule needs a unique index to be atomic instead of
+  # a read-then-write race.
+  postgres:
+    image: postgres:16-alpine
+    container_name: longevity-postgres
+    restart: always
+    networks: [longevity]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-clinic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clinic}
+      POSTGRES_DB: ${POSTGRES_DB:-clinic}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clinic} -d ${POSTGRES_DB:-clinic}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Risk cache. Keyed on the feature payload hash, so a hit is provably the same
+  # computation rather than merely the same patient.
+  redis:
+    image: redis:7-alpine
+    container_name: longevity-redis
+    restart: always
+    networks: [longevity]
+    # Bounded memory with LRU eviction: a cache that can exhaust the host is a
+    # liability, and every entry here is recomputable.
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # One-shot: `alembic upgrade head` then load the shipped SQLite fixture.
+  # Idempotent, and the backend waits for it to finish successfully, so the API
+  # can never come up against an empty or half-migrated database.
+  seed:
+    <<: *defaults
+    container_name: longevity-seed
+    restart: "no"
+    command: ["python", "scripts/seed_postgres.py"]
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
   # The five risk models behind one pyfunc router that returns probabilities
   # rather than class labels. The artefact is baked into the image at build time
   # (see Dockerfile), so models/ is deliberately NOT mounted.
@@ -71,14 +126,29 @@ services:
       - 0.0.0.0
       - --port
       - "8001"
+    environment:
+      BACKEND_URL: http://backend:8001
+      MLFLOW_URL: http://mlflow:5001/invocations
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-dev-longevity-token-change-me}
+      POSTGRES_DSN: postgresql+asyncpg://${POSTGRES_USER:-clinic}:${POSTGRES_PASSWORD:-clinic}@postgres:5432/${POSTGRES_DB:-clinic}
+      REDIS_URL: redis://redis:6379/0
+      # The containerised stack is the Postgres + Redis deployment. Host mode
+      # keeps the SQLite/no-cache defaults from the repo .env, so both paths stay
+      # exercised and a fresh clone still runs with no services at all.
+      DB_BACKEND: ${DB_BACKEND:-postgres}
+      CACHE_BACKEND: ${CACHE_BACKEND:-redis}
     volumes:
-      # The risks table is an append log the backend writes to on every request,
-      # so the database is a bind mount: it survives rebuilds and stays visible
-      # to host tooling (pytest, `make db`) rather than hiding in a volume.
-      - ./data:/app/data
+      # Read-only: with Postgres as the live database the SQLite file is a seed
+      # fixture, not a write target. Mounting it ro makes that explicit and stops
+      # a misconfigured backend from quietly writing to the wrong store.
+      - ./data:/app/data:ro
     depends_on:
       mlflow:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "scripts/healthcheck.py", "http://127.0.0.1:8001/health", "200"]
       interval: 10s
@@ -116,3 +186,6 @@ services:
 networks:
   longevity:
     name: longevity-net
+
+volumes:
+  postgres-data:
