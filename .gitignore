@@ -20,8 +20,8 @@ mlartifacts/
 mlflow.db
 models/mlflow_risk_router/
 
-# Claude Code local settings
-.claude/settings.local.json
+# Claude Code local agent state
+.claude/
 
 # OS
 .DS_Store
