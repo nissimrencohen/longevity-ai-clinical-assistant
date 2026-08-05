@@ -183,6 +183,40 @@ services:
       retries: 6
       start_period: 15s
 
+  # Clinical safety guard: an OpenAI-compatible proxy in front of OpenRouter.
+  #
+  # This is the ONLY place in the stack that sees the assistant's prose. MCP
+  # carries tool calls; the model's answer otherwise goes straight from
+  # OpenRouter to the clinician. Point LibreChat's endpoint baseURL here and
+  # every token the clinician sees has passed through policy.
+  #
+  # It holds no patient data and needs nothing else in the stack, so it is
+  # published for LibreChat and the eval harness to reach.
+  guard:
+    <<: *defaults
+    container_name: longevity-guard
+    command:
+      - uvicorn
+      - guard.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    environment:
+      GUARD_UPSTREAM_URL: ${GUARD_UPSTREAM_URL:-https://openrouter.ai/api/v1}
+      # Optional: only used when a caller sends no Authorization header of its
+      # own. LibreChat and the harness both send their own key.
+      OPENROUTER_KEY: ${OPENROUTER_KEY:-}
+    ports:
+      - "${GUARD_PUBLISH_PORT:-9200}:8080"
+    depends_on: []
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py", "http://127.0.0.1:8080/health", "200"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
 networks:
   longevity:
     name: longevity-net
