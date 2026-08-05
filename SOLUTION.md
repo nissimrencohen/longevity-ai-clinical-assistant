@@ -10,12 +10,12 @@ explanation in cited guidance — and refuses to prescribe.
 
 | | |
 |---|---|
-| Tests | **332 passed, 0 skipped, 0 failed** |
+| Tests | **332 passed, 0 failed** — 324 on a plain `docker compose up`, the other 8 need Postgres and MLflow published (`make up-debug`) |
 | Tier A evals (deterministic, free) | **100%** — 26 pass, 0 fail, 2 behavioural-skip of 28 |
 | Tier B evals (agent in the loop) | **96.4%** — 81/84 (28 cases × 3 repeats, 0 errored) on `claude-haiku-4.5` ([full report](evals/results/tier-b-final.md)) |
 | Manual UI suite | **35 queries**, all passing — [`MANUAL_TESTS.md`](MANUAL_TESTS.md) |
 | Lint | `ruff` clean |
-| Boot | `docker compose up -d --wait` → six healthy services (plus a one-shot seed) in ~25s |
+| Boot | `docker compose up -d --wait` → six healthy services (plus a one-shot seed) in ~30s from cold |
 
 ---
 
@@ -37,8 +37,8 @@ check on a `401`.
 
 ```bash
 cp .env.example .env             # works as-is; nothing to edit
-docker compose up -d --wait      # six services, ~25s; exits 0 only when all are serving
-uv run pytest                    # 318 passed, 8 service-gated skips
+docker compose up -d --wait      # six services, ~30s cold; exits 0 only when all are serving
+uv run pytest                    # 324 passed, 8 service-gated skips
 uv run python evals/harness.py --tier a       # deterministic evals: 100%
 ```
 
@@ -609,7 +609,7 @@ docker compose up -d --wait
 ```
 
 `--wait` blocks until every healthcheck passes, so a green exit means the stack is
-actually serving rather than merely started. Six services — `postgres`, `redis`,
+actually serving rather than merely started. Cold boot measured at ~30s. Six services — `postgres`, `redis`,
 `mlflow`, `backend`, `mcp`, `guard` — plus a one-shot `seed` container that loads
 the patient data into Postgres and exits.
 
