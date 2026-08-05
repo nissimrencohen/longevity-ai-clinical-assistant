@@ -263,7 +263,7 @@ The six tasks from `README.md`, and where each lives:
 | 2 | MLflow — five models served on `:5001` | ✅ | [`models/register_router.py`](models/register_router.py) — one pyfunc routing on `params["model"]` |
 | 3 | MCP — bearer-authed tools | ✅ | [`mcp-server/server.py`](mcp-server/server.py) — five tools, not two |
 | 4 | LibreChat — running and wired | ✅ | [`librechat/librechat.yaml`](librechat/librechat.yaml), [`librechat/SETUP.md`](librechat/SETUP.md) |
-| 5 | Evals — tool-call correctness, numeric faithfulness | ✅ | [`evals/`](evals/) — two tiers, 27 cases, [`HARNESS.md`](evals/HARNESS.md) |
+| 5 | Evals — tool-call correctness, numeric faithfulness | ✅ | [`evals/`](evals/) — two tiers, 28 cases, [`HARNESS.md`](evals/HARNESS.md) |
 | 6 | **Bonus** — retrieval with citations | ✅ | [`services/guidelines.py`](backend/app/services/guidelines.py) — TF-IDF *and* MiniLM embeddings, every citation verified on disk |
 | 6 | **Bonus** — custom agent | ✅ | [`agent/router.py`](agent/router.py) — deterministic tool-chaining orchestrator |
 
@@ -354,19 +354,28 @@ real MCP tools attached. Scores tool selection, numeric faithfulness, band
 faithfulness, trend, explanation faithfulness, and safety.
 
 The numeric-faithfulness rule is explicit: **a number in the prose must trace to
-a tool result, the doctor's question, or the assistant's own instructions.**
-Anything else fails. Only behavioural `safety` facts go to an LLM judge — a judge
-has no business grading arithmetic.
+a tool result *for the patient it is stated about*, the doctor's question, or the
+assistant's own instructions.** Anything else fails.
+
+**What is scored by code, and what by a model, moved during the project.** A judge
+has no business grading arithmetic, so numbers, bands, trends, directions and
+citations were always deterministic. Prescribing safety started as a judge call
+and is now deterministic too, because the judge turned out to agree with the rule
+only 32% of the time — see [§4](#4-trade-offs-and-what-is-left). What remains with
+the judge is open-ended behavioural phrasing: did it refuse an out-of-scope
+request, did it say it could not verify something.
 
 Statuses distinguish `skip` (not assertable at this tier) from `error`
 (infrastructure). An errored run is excluded from the pass rate: the first Tier B
 run counted HTTP 402s as model failures and reported 44%; the same run reads
 95.2% once infrastructure is separated out.
 
-Fourteen cases were added beyond the gold set, for failure modes it does not
-reach — hallucination *mid-conversation* after a successful lookup, nearest-name
-substitution, out-of-scope refusal, two-patient comparison, both
-NULL-`gestational_diabetes` patients, the null T2DM horizon, and determinism.
+15 cases were added beyond the gold set's 13, for failure modes it
+does not reach — hallucination *mid-conversation* after a successful lookup,
+nearest-name substitution, out-of-scope refusal, two-patient comparison, both
+NULL-`gestational_diabetes` patients, the null T2DM horizon, determinism, SHAP
+direction and percentage attribution, guideline citation, and **cross-patient
+contamination** — the last added after a live session produced exactly that.
 
 ### Correctness over guessing
 
@@ -457,21 +466,32 @@ open — an outage degrades latency, never correctness.
 
 ### The output guardrail proxy — enforcement, not instruction
 
-Asked whether to start atorvastatin, the assistant issued a definitive
-recommendation in **4 of 7 observed runs**, and strengthening the prohibition in
-all three places it was stated made the rate *worse*. Prompts are advisory.
+Asked whether to start atorvastatin, the assistant recommends it. Not always, which
+is what makes it dangerous — and **strengthening the prohibition in all three
+places it was stated made the rate worse**. Prompts are advisory.
+
+The measurement, across every recorded prescribing run:
+
+| | |
+|---|---|
+| Raw model deferred correctly on its own | **9 of 22** |
+| Raw model produced prescribing language | **13 of 22** |
+| Prescribing language surviving the guard | **0 of 22** |
+
+(Those 22 are the `safety-prescribe-p002` runs from the priced Tier B sweeps. The
+behaviour was first noticed in a much smaller sample — 4 of 7 hand-run trials —
+which is what prompted building the guard rather than tuning the prompt again.)
 
 The obvious homes for a guard — the backend, the MCP server — are both wrong:
 neither ever sees the assistant's prose. LibreChat's configurable `baseURL` gives
 a real interception point:
 
 ```
-LibreChat ──▶ guard :8080 ──▶ OpenRouter
+LibreChat ──▶ guard (:9200 → :8080 in-container) ──▶ OpenRouter
 ```
 
-Result: **2 of 3 failed without it; 3 of 3 passed through it.** Streaming is
-buffered deliberately — you cannot retract tokens already on screen, so
-mid-stream inspection enforces nothing.
+Streaming is buffered deliberately — you cannot retract tokens already on screen,
+so mid-stream inspection enforces nothing.
 
 Its first live intervention taught the design something. It removed:
 
