@@ -10,7 +10,7 @@ explanation in cited guidance — and refuses to prescribe.
 
 | | |
 |---|---|
-| Tests | **332 passed, 0 failed** — 324 on a plain `docker compose up`, the other 8 need Postgres and MLflow published (`make up-debug`) |
+| Tests | **332 passed, 0 failed** — 324 on a plain `docker compose up`; `make up-debug` publishes MLflow (+4) and setting `POSTGRES_DSN` covers the last 4 |
 | Tier A evals (deterministic, free) | **100%** — 26 pass, 0 fail, 2 behavioural-skip of 28 |
 | Tier B evals (agent in the loop) | **96.4%** — 81/84 (28 cases × 3 repeats, 0 errored) on `claude-haiku-4.5` ([full report](evals/results/tier-b-final.md)) |
 | Manual UI suite | **35 queries**, all passing — [`MANUAL_TESTS.md`](MANUAL_TESTS.md) |
