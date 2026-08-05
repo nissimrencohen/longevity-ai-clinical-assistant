@@ -180,3 +180,45 @@ def test_citation_string_is_stable_and_quotable(retriever) -> None:
     chunk, _ = retriever.search("dementia risk factors", k=1)[0]
     assert chunk.citation == f"{chunk.source_file} § {chunk.heading}"
     assert " § " in chunk.citation
+
+
+# ---------------------------------------------------------------------------
+# Embedding backend (the bonus track) — skipped unless `uv sync --extra rag`
+# ---------------------------------------------------------------------------
+
+def _embedding_retriever():
+    pytest.importorskip("chromadb", reason="install with `uv sync --extra rag`")
+    from backend.app.services.guidelines import build_retriever
+
+    return build_retriever("embedding")
+
+
+def test_embedding_similarity_is_bounded_and_monotonic() -> None:
+    """Chroma's default space is squared L2, which is unbounded.
+
+    An earlier `1 - distance` clamped nearly every score to 0.0, making them
+    useless for ranking or debugging.
+    """
+    pytest.importorskip("chromadb", reason="install with `uv sync --extra rag`")
+    from backend.app.services.guidelines_embedding import _similarity
+
+    assert _similarity(0.0) == 1.0
+    assert 0.0 < _similarity(5.0) < _similarity(1.0) < 1.0
+
+
+def test_embedding_retrieval_finds_the_right_document() -> None:
+    retriever = _embedding_retriever()
+    hits = retriever.search("what drives dementia risk", k=2, risk_code="DEMENTIA")
+    assert hits
+    assert {c.source_file for c, _ in hits} == {"dementia_caide.md"}
+
+
+def test_embedding_citations_are_verifiable_too() -> None:
+    """Retrieval strategy changes; citation integrity does not."""
+    retriever = _embedding_retriever()
+    for chunk, _score in retriever.search("kidney function and risk", k=3):
+        result = verify_citation(
+            chunk.source_file, heading=chunk.heading, quote=chunk.text[:60]
+        )
+        assert result["file_exists"] and result["heading_exists"]
+        assert result["quote_found"], f"{chunk.citation} did not verify"

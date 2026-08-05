@@ -188,7 +188,15 @@ async def test_postgres_dedupe_is_atomic() -> None:
     SQLite this is enforced by a read-then-write check with a race window; here
     it is a constraint, so concurrent duplicates cannot both land.
     """
+    import uuid
+
+    from sqlalchemy import text as sa_text
+
     pg = await _postgres_store()
+    # A fresh hash per run. Postgres persists between test runs, so a fixed hash
+    # meant the "first" insert had already happened on a previous run and the
+    # test failed against a perfectly working constraint.
+    digest = f"parity-{uuid.uuid4().hex}"
     row = RiskRow(
         patient_id="P001",
         risk_code="CKD",
@@ -198,13 +206,19 @@ async def test_postgres_dedupe_is_atomic() -> None:
         model_version="test",
         time_horizon_years=10,
         computed_at="2026-08-05T00:00:00+00:00",
-        inputs_json=json.dumps({"inputs_hash": "parity-test-hash"}),
-        inputs_hash="parity-test-hash",
+        inputs_json=json.dumps({"inputs_hash": digest}),
+        inputs_hash=digest,
     )
     try:
         first = await pg.append_risks([row])
         second = await pg.append_risks([row])
     finally:
+        # Leave the database as we found it.
+        async with pg._session() as session:  # noqa: SLF001 - test cleanup
+            await session.execute(
+                sa_text("DELETE FROM risks WHERE inputs_hash = :h"), {"h": digest}
+            )
+            await session.commit()
         await pg.close()
 
     assert len(first) == 1, "first append should insert"

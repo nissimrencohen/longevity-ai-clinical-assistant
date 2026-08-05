@@ -47,18 +47,45 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
-TOKEN_RE = re.compile(r"\[PATIENT_[0-9A-F]{6}\]")
+# THE TOKEN MUST READ AS A NAME, NOT AN IDENTIFIER.
+#
+# The first design used `[PATIENT_7F3A2C]`, and a live Tier B run showed exactly
+# why that was wrong. The model read it as a patient ID, skipped find_patient,
+# and "normalised" it into the P### shape the tool description asks for —
+# emitting get_current_biomarkers(patient_id="P084"), an ID invented from the
+# token's hex digits. Two of three cases failed that way; a third passed
+# `PATIENT_129CF9` through verbatim.
+#
+# So: no digits (nothing to build a P### from) and a name-like shape, so the
+# model routes it to find_patient the way it routes any other name. The `Zx`
+# prefix makes accidental matches against ordinary prose ("Patient record")
+# essentially impossible while keeping it readable.
+_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+# The "Patient " prefix is OPTIONAL when matching, because the model does not
+# always keep it. A live run showed it reading "Patient Zxsyqn" as title +
+# surname and calling find_patient(name="Zxsyqn") — correct routing, but the
+# bare core did not restore, so the lookup failed. The `Zx` core is distinctive
+# enough to match on its own; clinical prose does not contain it by accident.
+TOKEN_RE = re.compile(r"\b(?:Patient\s+)?Zx[A-Za-z]{4}\b", re.IGNORECASE)
 
 
 def token_for(name: str) -> str:
-    """Stable pseudonym for a name.
+    """Stable, name-shaped pseudonym.
 
     Derived from the name itself rather than allocated, so it survives across
     requests and processes without shared state — a conversation stays coherent
     to the model even though it is only ever seeing tokens.
     """
-    digest = hashlib.sha256(name.strip().lower().encode("utf-8")).hexdigest()
-    return f"[PATIENT_{digest[:6].upper()}]"
+    digest = hashlib.sha256(name.strip().lower().encode("utf-8")).digest()
+    letters = "".join(_ALPHABET[byte % 26] for byte in digest[:4])
+    return f"Patient Zx{letters}"
+
+
+def _token_key(text: str) -> str:
+    """Normalise a matched token to its bare core, e.g. 'Patient Zxsyqn' -> 'zxsyqn'."""
+    normalised = re.sub(r"\s+", " ", text).strip().lower()
+    prefix = "patient "
+    return normalised[len(prefix) :] if normalised.startswith(prefix) else normalised
 
 
 def _name_variants(full_name: str) -> list[str]:
@@ -94,7 +121,9 @@ class PhiRedactor:
         self._from_token = {}
         for full_name in self.names:
             token = token_for(full_name)
-            self._from_token[token] = full_name
+            # Keyed on the bare core so both "Patient Zxsyqn" and "Zxsyqn"
+            # resolve; see the note on TOKEN_RE.
+            self._from_token[_token_key(token)] = full_name
             for variant in _name_variants(full_name):
                 # A bare surname shared by two patients is ambiguous; map it to
                 # whichever full name owns it first and let find_patient sort out
@@ -116,12 +145,19 @@ class PhiRedactor:
         return result
 
     def restore(self, text: str) -> str:
-        """Turn tokens back into names, for text re-entering the trust boundary."""
+        """Turn tokens back into names, for text re-entering the trust boundary.
+
+        Case-insensitive and whitespace-tolerant: a model may re-type a token as
+        "patient zxqvbk" or across a line break, and an unrestored token means a
+        failed tool call. Unknown tokens are left alone rather than guessed at.
+        """
         if not text or not self._from_token:
             return text
-        return TOKEN_RE.sub(
-            lambda m: self._from_token.get(m.group(0), m.group(0)), text
-        )
+
+        def replace(match: re.Match[str]) -> str:
+            return self._from_token.get(_token_key(match.group(0)), match.group(0))
+
+        return TOKEN_RE.sub(replace, text)
 
     def scrub_messages(self, messages: list[dict]) -> tuple[list[dict], int]:
         """Scrub every message in a request. Returns (messages, replacements).

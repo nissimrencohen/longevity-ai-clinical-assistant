@@ -48,13 +48,71 @@ def test_token_is_stable_across_calls_and_processes() -> None:
     """
     assert token_for("Maya Cohen") == token_for("maya cohen")
     assert token_for("Maya Cohen") != token_for("David Levi")
-    assert token_for("Maya Cohen").startswith("[PATIENT_")
+    assert token_for("Maya Cohen").startswith("Patient Zx")
 
 
 def test_token_does_not_contain_the_name() -> None:
     token = token_for("Maya Cohen")
     assert "maya" not in token.lower()
     assert "cohen" not in token.lower()
+
+
+def test_token_contains_no_digits() -> None:
+    """REGRESSION from a live Tier B run.
+
+    The original `[PATIENT_7F3A2C]` read as a patient ID: the model skipped
+    find_patient and "normalised" the token into the P### shape the tool
+    description asks for, emitting get_current_biomarkers(patient_id="P084") —
+    an identifier invented from the token's own hex digits. With no digits there
+    is nothing to build a P### from.
+    """
+    for name in ROSTER:
+        token = token_for(name)
+        assert not any(ch.isdigit() for ch in token), token
+
+
+def test_token_is_name_shaped_not_id_shaped() -> None:
+    """It must route to find_patient the way any other name would."""
+    token = token_for("Maya Cohen")
+    assert token.startswith("Patient Zx")
+    assert "[" not in token and "_" not in token
+    # Must not look like the patient_id format the clinical tools expect.
+    import re as _re
+
+    assert not _re.fullmatch(r"P\d{3}", token)
+
+
+def test_restore_is_case_and_whitespace_tolerant(redactor: PhiRedactor) -> None:
+    """A model may re-type a token; an unrestored token is a failed tool call."""
+    token = token_for("Maya Cohen")
+    assert redactor.restore(token.lower()) == "Maya Cohen"
+    assert redactor.restore(token.upper()) == "Maya Cohen"
+    assert redactor.restore(token.replace(" ", "  ")) == "Maya Cohen"
+
+
+def test_bare_token_core_restores(redactor: PhiRedactor) -> None:
+    """REGRESSION from a live Tier B run.
+
+    The model read "Patient Zxsyqn" as title + surname and called
+    find_patient(name="Zxsyqn") — correct routing, but the bare core did not
+    restore, so the lookup failed and it reported the patient as non-existent.
+    """
+    core = token_for("Maya Cohen").removeprefix("Patient ")
+    assert redactor.restore(core) == "Maya Cohen"
+    assert redactor.restore(core.lower()) == "Maya Cohen"
+
+    call = {
+        "id": "c1",
+        "function": {"name": "find_patient", "arguments": json.dumps({"name": core})},
+    }
+    restored = redactor.restore_tool_call(call)
+    assert json.loads(restored["function"]["arguments"])["name"] == "Maya Cohen"
+
+
+def test_ordinary_prose_is_not_mistaken_for_a_token(redactor: PhiRedactor) -> None:
+    """"Patient record" is six letters after "Patient" — it must survive."""
+    for text in ("Patient record updated.", "The patient reports fatigue."):
+        assert redactor.restore(text) == text
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +150,7 @@ def test_longest_variant_wins(redactor: PhiRedactor) -> None:
     """
     out = redactor.scrub("Maya Cohen")
     assert out == token_for("Maya Cohen")
-    assert out.count("[PATIENT_") == 1
+    assert out.count("Patient Zx") == 1
 
 
 def test_unrelated_words_are_untouched(redactor: PhiRedactor) -> None:
@@ -331,4 +389,4 @@ async def test_streaming_also_restores_names(phi_guard_client) -> None:
         if line.startswith("data:") and line[5:].strip() not in ("", "[DONE]")
     )
     assert delivered.startswith("Rivka Shapiro's dementia risk is 0.45")
-    assert "[PATIENT_" not in delivered
+    assert "Patient Zx" not in delivered

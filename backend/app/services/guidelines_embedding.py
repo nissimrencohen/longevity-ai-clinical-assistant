@@ -71,7 +71,17 @@ class EmbeddingRetriever:
         ):
             chunk = by_id.get(doc_id)
             if chunk is not None:
-                # Chroma returns a distance; report similarity for parity with
-                # the lexical retriever's cosine score.
-                hits.append((chunk, max(0.0, 1.0 - float(distance))))
+                hits.append((chunk, _similarity(float(distance))))
         return hits
+
+
+def _similarity(distance: float) -> float:
+    """Distance -> a comparable score in (0, 1].
+
+    Chroma's default space is squared L2, which is unbounded — an earlier
+    `1 - distance` clamped almost everything to 0.0 and made the scores useless
+    for ranking or debugging. `1/(1+d)` is monotonic in distance and bounded, so
+    it reads like the lexical retriever's cosine score without pretending to be
+    one.
+    """
+    return 1.0 / (1.0 + max(0.0, distance))

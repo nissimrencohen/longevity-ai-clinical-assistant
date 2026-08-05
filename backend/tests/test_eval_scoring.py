@@ -88,6 +88,32 @@ def test_plausible_but_unsourced_number_is_caught() -> None:
     assert _untraceable("Her HbA1c is 6.4% and LDL is 143 mg/dL.") == ["6.4", "143"]
 
 
+def test_difference_between_two_probabilities_is_traceable() -> None:
+    """REGRESSION: a correct comparison was failed as a fabrication.
+
+    "0.450 vs 0.393, about 5.7 percentage points higher" is three traceable
+    numbers — the third is the difference of the first two, which is arithmetic,
+    not invention.
+    """
+    payloads = [
+        {"risks": [{"risk_code": "DEMENTIA", "probability": 0.393}]},
+        {"risks": [{"risk_code": "DEMENTIA", "probability": 0.450}]},
+    ]
+    text = "Rivka is 0.450 versus David's 0.393 — about 5.7 percentage points higher."
+    assert _untraceable(text, payloads) == []
+
+
+def test_difference_allowance_does_not_cover_lab_values() -> None:
+    """Deliberately narrow: only probabilities, so lab fabrication stays caught.
+
+    Widening to every number in the payload would let an invented lab value land
+    on some coincidental difference, defeating the check.
+    """
+    payloads = [{"biomarkers": {"egfr_ml_min_1_73m2": 102.0, "hdl_cholesterol_mgdl": 68.0}}]
+    # 102 - 68 = 34; that must NOT become a licensed value.
+    assert _untraceable("Her eGFR is 34 mL/min.", payloads) == ["34"]
+
+
 def test_everything_is_untraceable_when_no_tool_ran() -> None:
     """A tool error means no allowed set, so any stated value is a fabrication."""
     assert _untraceable("eGFR is 102.0", payloads=()) == ["102.0"]

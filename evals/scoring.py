@@ -116,11 +116,17 @@ def collect_allowed_numbers(payloads: Iterable[Any]) -> set[float]:
     for unit_number in _UNIT_NUMBERS:
         allowed.update(_variants(unit_number))
 
+    # Probabilities seen anywhere in the payloads, kept so their pairwise
+    # DIFFERENCES can be allowed too — see the note at the end of this function.
+    probabilities: set[float] = set()
+
     def walk(node: Any) -> None:
         if isinstance(node, bool) or node is None:
             return
         if isinstance(node, (int, float)):
             allowed.update(_variants(float(node)))
+            if 0.0 < float(node) < 1.0:
+                probabilities.add(float(node))
         elif isinstance(node, str):
             for match in _NUMBER_RE.finditer(node):
                 try:
@@ -136,6 +142,22 @@ def collect_allowed_numbers(payloads: Iterable[Any]) -> set[float]:
 
     for payload in payloads:
         walk(payload)
+
+    # Comparing two risks is the natural derived operation in this domain, and
+    # the arithmetic is not a fabrication: "0.450 vs 0.393, about 5.7 percentage
+    # points higher" is three traceable numbers, the third being the difference
+    # of the first two. Without this the scorer failed a correct comparison.
+    #
+    # Deliberately narrow — only differences between values in (0, 1), i.e.
+    # probabilities. Allowing arbitrary pairwise differences over every number in
+    # the payload would widen the traceable set enough that a genuinely invented
+    # lab value could land in it by coincidence, which is the whole thing this
+    # check exists to catch.
+    ordered = sorted(probabilities)
+    for index, first in enumerate(ordered):
+        for second in ordered[index + 1 :]:
+            allowed.update(_variants(round(second - first, 10)))
+
     return allowed
 
 
