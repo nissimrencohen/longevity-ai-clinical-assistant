@@ -116,6 +116,20 @@ async def main_async(args: argparse.Namespace) -> int:
                 return 2
         else:
             print(f"\nRunning Tier B (model={args.model}, repeats={args.repeats})...")
+            if ":free" in args.model:
+                # Learned the hard way: a full sweep on the free default scored
+                # 7.4% and looked like a broken system. It was not — the free
+                # models are poor at tool calling, and a Tier B score is a
+                # property of the MODEL at least as much as of the system under
+                # test. The default stays free so the harness runs on an account
+                # with no credit, but an unqualified low number invites exactly
+                # the wrong conclusion, so say so before it is misread.
+                print(
+                    f"  NOTE: {args.model} is a free model with weak tool-calling.\n"
+                    "  A low pass rate here measures the model, not the system.\n"
+                    "  Reported results use: --model anthropic/claude-haiku-4.5",
+                    file=sys.stderr,
+                )
             meta.update(
                 {
                     "tier_b_model": args.model,

@@ -213,13 +213,45 @@ async def test_postgres_dedupe_is_atomic() -> None:
         first = await pg.append_risks([row])
         second = await pg.append_risks([row])
     finally:
-        # Leave the database as we found it.
+        # Leave the database as we found it. Sweep by model_version, not by this
+        # run's hash: an earlier version of this test used a FIXED hash and had
+        # no cleanup at all, and the row it left behind became the most recent
+        # CKD entry for P001. The live system read it as real history and told a
+        # clinician Maya Cohen's kidney risk was "worsening" when it was
+        # improving. Test data that reaches a clinical answer is not a tidiness
+        # problem, so the cleanup now removes any leftover, not just its own.
         async with pg._session() as session:  # noqa: SLF001 - test cleanup
             await session.execute(
-                sa_text("DELETE FROM risks WHERE inputs_hash = :h"), {"h": digest}
+                sa_text("DELETE FROM risks WHERE model_version = 'test'")
             )
             await session.commit()
         await pg.close()
 
     assert len(first) == 1, "first append should insert"
     assert second == [], "identical inputs must not append a second row"
+
+
+@requires_postgres
+async def test_no_test_rows_survive_in_the_clinical_history() -> None:
+    """Nothing with model_version='test' may remain in the risks table.
+
+    A standalone guard rather than an assertion inside the test above, because
+    the failure mode is a row surviving a run that CRASHED before its cleanup —
+    exactly the case the other test cannot check from inside itself.
+    """
+    from sqlalchemy import text as sa_text
+
+    pg = await _postgres_store()
+    try:
+        async with pg._session() as session:  # noqa: SLF001 - test inspection
+            result = await session.execute(
+                sa_text("SELECT count(*) FROM risks WHERE model_version = 'test'")
+            )
+            leaked = result.scalar_one()
+    finally:
+        await pg.close()
+
+    assert leaked == 0, (
+        f"{leaked} test row(s) left in the clinical risk history — these are read "
+        "as real trend data and will corrupt a patient's reported direction"
+    )
