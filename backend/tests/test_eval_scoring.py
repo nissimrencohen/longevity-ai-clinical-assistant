@@ -291,3 +291,105 @@ def test_legitimate_percentages_are_not_flagged(answer: str) -> None:
     supposed to say that.
     """
     assert not _flags(answer), answer
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # Verbatim from a real Tier B run that this scorer wrongly failed.
+        "Age (66 years) — her age relative to a reference of 35 is the largest "
+        "driver, accounting for about 34% of the deviation from baseline.",
+        "Systolic blood pressure is elevated, contributing about 12% of the deviation.",
+        "Education accounts for 28% of the movement away from the reference.",
+        "eGFR explains roughly 27% of the total log-odds deviation.",
+    ],
+)
+def test_share_of_deviation_is_allowed_when_qualified(answer: str) -> None:
+    """`share_of_deviation` IS a percentage, and we deliberately publish it.
+
+    "34% of the DEVIATION FROM BASELINE" is exactly what the field means and is
+    correct. Flagging it failed a model that had done precisely the right thing —
+    the fastest way to make a safety metric worthless. The distinction that
+    matters is the noun the percentage attaches to: deviation (fine) vs risk
+    (invalid).
+    """
+    assert not _flags(answer), answer
+
+
+def test_unqualified_risk_attribution_still_fails_after_the_fix() -> None:
+    """Widening for `share_of_deviation` must not blunt the actual check."""
+    assert _flags("Age accounts for 40% of her total risk.")
+    assert _flags("Her eGFR contributes 34% of her kidney risk.")
+    assert _flags("Smoking is responsible for 25% of his cardiovascular risk.")
+
+
+# --- driver direction --------------------------------------------------------
+
+
+def _direction(answer: str, expect: str = "increases_risk") -> str:
+    from evals.tier_b import _check_driver_direction
+
+    payload = {
+        "risks": [
+            {
+                "risk_code": "CKD",
+                "drivers": [
+                    {"feature": "egfr", "label": "eGFR", "direction": "increases_risk"}
+                ],
+            }
+        ]
+    }
+    fact = {"risk_code": "CKD", "feature": "egfr", "expect": expect}
+    return _check_driver_direction(fact, answer, [payload]).status
+
+
+def test_reduced_egfr_wording_is_not_read_as_lowering_risk() -> None:
+    """Verbatim from a real Tier B run this scorer wrongly failed.
+
+    "his reduced eGFR" describes how low the biomarker is — it does not mean the
+    eGFR reduces risk. Counting it as a "lowers" signal made the check contradict
+    itself and veto a correct answer.
+    """
+    answer = (
+        "Avraham Friedman's eGFR is **hurting** his kidney risk significantly.\n\n"
+        "His eGFR is 52 mL/min/1.73m2 (reference 100), and it contributes a "
+        "**log-odds of 1.0397** to his chronic kidney disease risk—the "
+        "second-largest driver after age. The low eGFR pushes his kidney risk "
+        "upward. His 10-year CKD probability is 0.50 (high risk band), and the "
+        "main factors raising it are his age (72), his reduced eGFR, and proteinuria."
+    )
+    assert _direction(answer) == "pass"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "His low eGFR increases his kidney risk.",
+        "The eGFR of 52 is pushing his risk upward.",
+        "eGFR is hurting him here — it raises CKD risk.",
+        "His reduced eGFR worsens the kidney picture.",
+    ],
+)
+def test_increase_wordings_accepted(answer: str) -> None:
+    assert _direction(answer) == "pass"
+
+
+def test_a_genuinely_wrong_direction_is_caught() -> None:
+    """The scorer must still fail an answer that inverts the relationship."""
+    assert _direction("His eGFR lowers his kidney risk.") == "fail"
+    assert _direction("The eGFR is protective against kidney disease.") == "fail"
+
+
+def test_known_limitation_qualifier_is_positional_not_grammatical() -> None:
+    """Documented gap: the qualifier is found by proximity, not by parsing.
+
+    A sentence that attributes a share of RISK and then happens to mention a
+    baseline within the next 60 characters is forgiven. Tightening this properly
+    needs dependency parsing, which is not worth it for a scorer whose job is to
+    flag an obvious class of error — but the gap is real and should not be
+    discovered by surprise later.
+    """
+    laundered = "Her eGFR contributes 34% of her kidney risk, versus the baseline."
+    assert not _flags(laundered), (
+        "if this starts failing the qualifier logic got stricter — update the note"
+    )

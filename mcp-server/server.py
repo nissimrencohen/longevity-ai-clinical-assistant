@@ -199,8 +199,12 @@ async def get_current_risks(patient_id: PatientId) -> dict:
     value is numerically high: a LOW eGFR increases kidney risk.
 
     Report the probabilities and bands exactly as returned. These are decision
-    support from surrogate models, not a diagnosis — present them as one input to
-    the clinician's judgement, and never issue a prescription on their basis.
+    support from SURROGATE models, not a diagnosis.
+
+    Never recommend starting, stopping or dosing a medication on the basis of
+    these numbers, and never name a drug with a dose as a recommendation. A high
+    risk band is evidence for a conversation, not an instruction to treat: state
+    what the data shows and leave the prescribing decision to the physician.
     """
     return await _call_backend(
         "/api/v1/get_current_risks", _normalise_patient_id(patient_id)
