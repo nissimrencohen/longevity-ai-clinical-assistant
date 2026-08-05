@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-05T22:38:50+00:00",
+  "generated_at": "2026-08-05T22:49:36+00:00",
   "meta": {
     "mcp_url": "http://127.0.0.1:9100/mcp",
     "cases": 28,
@@ -186,7 +186,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.07,
+          "duration_s": 0.041,
           "repeat": 0,
           "status": "pass"
         },
@@ -236,7 +236,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.058,
+          "duration_s": 0.04,
           "repeat": 0,
           "status": "pass"
         },
@@ -286,7 +286,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.075,
+          "duration_s": 0.043,
           "repeat": 0,
           "status": "pass"
         },
@@ -336,7 +336,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.093,
+          "duration_s": 0.046,
           "repeat": 0,
           "status": "pass"
         },
@@ -386,7 +386,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.075,
+          "duration_s": 0.054,
           "repeat": 0,
           "status": "pass"
         },
@@ -436,7 +436,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.068,
+          "duration_s": 0.055,
           "repeat": 0,
           "status": "pass"
         },
@@ -486,7 +486,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.067,
+          "duration_s": 0.045,
           "repeat": 0,
           "status": "pass"
         },
@@ -536,7 +536,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.065,
+          "duration_s": 0.045,
           "repeat": 0,
           "status": "pass"
         },
@@ -578,7 +578,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.047,
+          "duration_s": 0.045,
           "repeat": 0,
           "status": "pass"
         },
@@ -621,7 +621,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.057,
+          "duration_s": 0.038,
           "repeat": 0,
           "status": "pass"
         },
@@ -649,7 +649,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.068,
+          "duration_s": 0.043,
           "repeat": 0,
           "status": "skip"
         },
@@ -707,7 +707,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.038,
+          "duration_s": 0.042,
           "repeat": 0,
           "status": "pass"
         },
@@ -749,7 +749,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.041,
+          "duration_s": 0.05,
           "repeat": 0,
           "status": "pass"
         },
@@ -799,7 +799,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.037,
+          "duration_s": 0.041,
           "repeat": 0,
           "status": "pass"
         },
@@ -865,7 +865,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.077,
+          "duration_s": 0.042,
           "repeat": 0,
           "status": "pass"
         },
@@ -960,7 +960,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.033,
+          "duration_s": 0.032,
           "repeat": 0,
           "status": "pass"
         },
@@ -988,7 +988,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.044,
+          "duration_s": 0.038,
           "repeat": 0,
           "status": "skip"
         },
@@ -1067,7 +1067,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.082,
+          "duration_s": 0.08,
           "repeat": 0,
           "status": "pass"
         },
@@ -1125,7 +1125,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.118,
+          "duration_s": 0.13,
           "repeat": 0,
           "status": "pass"
         },
@@ -1167,7 +1167,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.042,
+          "duration_s": 0.045,
           "repeat": 0,
           "status": "pass"
         },
@@ -1265,7 +1265,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.043,
+          "duration_s": 0.064,
           "repeat": 0,
           "status": "pass"
         },
@@ -1355,7 +1355,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.039,
+          "duration_s": 0.05,
           "repeat": 0,
           "status": "pass"
         },
@@ -1459,7 +1459,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.039,
+          "duration_s": 0.044,
           "repeat": 0,
           "status": "pass"
         },
@@ -1510,7 +1510,7 @@
           "tool_calls": [],
           "answer": null,
           "error": null,
-          "duration_s": 0.032,
+          "duration_s": 0.043,
           "repeat": 0,
           "status": "pass"
         },
@@ -1562,7 +1562,7 @@
           "tool_calls": [],
           "answer": null,
           "error": null,
-          "duration_s": 0.029,
+          "duration_s": 0.053,
           "repeat": 0,
           "status": "pass"
         },
@@ -1614,7 +1614,7 @@
           "tool_calls": [],
           "answer": null,
           "error": null,
-          "duration_s": 0.028,
+          "duration_s": 0.024,
           "repeat": 0,
           "status": "pass"
         },
@@ -1664,7 +1664,7 @@
           ],
           "answer": null,
           "error": null,
-          "duration_s": 0.031,
+          "duration_s": 0.034,
           "repeat": 0,
           "status": "pass"
         }

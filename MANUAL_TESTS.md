@@ -79,9 +79,34 @@ skimming reads the first line.
 ```
 Which of my patients has the highest T2DM risk?
 ```
-**Pass:** answers only for patients already named in the conversation, and says it
-can look up others by name. **It has no roster and must not invent one** — see the
-trade-off in [`SOLUTION.md` §4](SOLUTION.md).
+**Pass:** answers only for patients already named earlier in *this* conversation,
+and says it can look up others by name. **It has no roster and must not invent
+one.**
+
+> ### 🔶 This is the one deliberate trade-off — and it costs us a test
+>
+> In a fresh chat the answer is *"I don't have a list of your patients — tell me
+> which ones."* That is correct here, and it **fails the assignment's own gold
+> eval case** `multistep-highest-t2dm`, 3 runs out of 3.
+>
+> **Why.** The roster used to sit in the agent's system prompt. That worked — and
+> it shipped all eight patient names to an external model **on every single turn**,
+> including turns that had nothing to do with patients. `find_patient` now resolves
+> one named patient server-side, so only the patient actually asked about ever
+> leaves the backend, and only if the caller is permitted to see them.
+>
+> **The cost is real and I am not hiding it:** the assistant can no longer answer
+> population questions across the clinic.
+>
+> **The proper fix** is a `list_patients` MCP tool gated on `clinic_wide` scope and
+> written to the audit log — the roster leaving the backend on explicit, recorded
+> request rather than sitting in every prompt. That is the right design. It is not
+> built, and the failing case is left failing so the decision is visible rather
+> than papered over. Full reasoning in
+> [`SOLUTION.md` §4](SOLUTION.md#4-trade-offs-and-what-is-left).
+>
+> Deleting the case would have made the suite green and the decision invisible. A
+> suite you edit until it passes measures nothing.
 
 ---
 

@@ -21,49 +21,56 @@ explanation in cited guidance — and refuses to prescribe.
 
 ## Read this in 5 minutes
 
-If you have time for three things:
-
-1. **Run it** — the two commands below. Nothing else is needed.
-2. **Run [`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 copy-paste queries with an
-   answer key verified against the database. It is the fastest way to see what the
-   system does *and* what it refuses to do.
-3. **Read [§4 Trade-offs](#4-trade-offs-and-what-is-left)** — the honest part.
-   What I got wrong, what the tests caught, and the one eval case I left failing
-   on purpose.
-
 ```bash
 cp .env.example .env
-docker compose up -d --wait      # six services, ~25s, exits 0 only when all are serving
+docker compose up -d --wait      # six services, ~25s; exits 0 only when all are serving
 uv run python evals/harness.py --tier a    # deterministic evals — no API key, no cost
 ```
 
-That is the whole verification loop. The chat UI needs LibreChat and an OpenRouter
-key — [§3](#3-how-to-run-it-and-the-feature-flags) has the click-by-click setup.
+Then, if you have time for two more things:
+
+1. **Run [`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 copy-paste chat queries with an
+   answer key verified against the database. The fastest way to see what the system
+   does *and* what it refuses to do.
+2. **Read [§4 Trade-offs](#4-trade-offs-and-what-is-left)** — the honest part: what
+   I got wrong, what the tests caught, and the one eval case left failing on purpose.
+
+The chat UI needs LibreChat and an OpenRouter key —
+[§3](#3-how-to-run-it-and-the-feature-flags) has the click-by-click setup.
 
 ### The idea in one paragraph
 
 The assignment asks for a chat assistant over five risk models. The hard part is
 not the wiring, it is that **a fluent wrong answer is worse than no answer** in a
-clinical setting. So every addition here is about making the system unable to be
+clinical setting. So everything here is aimed at making the system unable to be
 confidently wrong: numbers must trace to a tool result *for that patient*,
 citations are re-read from disk, prescribing is blocked by a proxy rather than
 requested by a prompt, patient names are pseudonymised before they reach a
-third-party model, and the eval suite gates every commit for free.
+third-party model, and a free deterministic eval tier gates every commit.
 
----
+### What is here beyond the brief, and why
 
-## Contents
+The six required tasks and **both** bonus tracks are complete
+([§1](#1-core-requirements-and-bonuses)). Everything below is additional, and each
+exists because of a specific failure this system can have — not for its own sake.
+All of it is **off or defaulted to the assignment's behaviour** unless switched on.
 
-- [Read this in 5 minutes](#read-this-in-5-minutes)
-- [Architecture](#architecture)
-- [1. Core requirements and bonuses](#1-core-requirements-and-bonuses)
-  - Async backend · concurrent model calls · error contract · MCP tools · evals · both bonus tracks
-- [2. Architectural additions, and why they matter clinically](#2-architectural-additions-and-why-they-matter-clinically)
-  - Postgres · Redis · the safety proxy · SHAP · two-way PHI scrubbing · RBAC · retrieval · tracing
-- [3. How to run it, and the feature flags](#3-how-to-run-it-and-the-feature-flags)
-  - Docker · LibreChat click-by-click · **[the manual test suite](MANUAL_TESTS.md)** · flags · tests
-- [4. Trade-offs and what is left](#4-trade-offs-and-what-is-left)
-  - The GET that writes · unit assumptions · what fails and why · where AI tooling was used
+| Addition | The failure it prevents | Where |
+|---|---|---|
+| **Safety guard proxy** | The model issued a definitive prescription in **13 of 22** runs; prompts are advisory. **0 of 22** survived the guard. | [§2](#the-output-guardrail-proxy--enforcement-not-instruction) |
+| **Two-way PHI de-identification** | Real patient names reaching a third party that will not sign a BAA. | [§2](#two-way-phi-scrubbing) |
+| **SHAP explanations** | "Why is this risk high?" answered from general knowledge instead of the model. Exact closed form, proved against brute-force Shapley. | [§2](#shap-with-the-maths-proved-not-assumed) |
+| **PostgreSQL** | The dedupe rule is a read-then-write race under SQLite; here it is one atomic `INSERT … ON CONFLICT`. | [§2](#postgresql--for-the-write-not-for-fashion) |
+| **Redis cache** | Recomputing identical inputs — and, more subtly, presenting an hour-old number as fresh. | [§2](#redis--keyed-on-the-payload-hash-not-the-patient) |
+| **RBAC + audit log** | "All doctors see all patients" was *implicit*. Now explicit, configurable, and every decision recorded — denials included. | [§2](#rbac-and-audit) |
+| **OpenTelemetry tracing** | Proves the concurrency claim instead of asserting it; wrapped so auto-instrumentation cannot leak PHI into a dashboard. | [§2](#observability-that-cannot-leak--opentelemetry-and-how-it-is-used) |
+| **Docker + network isolation** | Only two ports published; Postgres, Redis, MLflow and the backend unreachable from the host. | [§3](#docker-recommended) |
+| **Manual test suite** | Batched, adversarial questions that no single-turn eval reaches. Found three real defects. | [`MANUAL_TESTS.md`](MANUAL_TESTS.md) |
+
+> The brief asks for a *short* `SOLUTION.md`. This one is not short, because the
+> additions above each need a reason to be worth anything. The 5-minute path is
+> this page down to the diagram; §1 covers the required work; §2 is the reasoning;
+> §4 is what I would fix next.
 
 ---
 
@@ -77,35 +84,63 @@ the backend are not reachable from the host at all.
 flowchart TB
     doc["Doctor<br/><i>browser</i>"] --> lc["LibreChat v0.8.7<br/>:3080"]
 
-    lc -->|"OpenAI-compatible<br/>baseURL"| guard
     lc -->|"MCP · streamable HTTP<br/>bearer auth · :9100"| mcp
+    lc -->|"OpenAI-compatible baseURL"| guard
 
-    subgraph boundary["trust boundary — real patient names never cross"]
-        guard["<b>Guard proxy</b> :9200<br/>scrub names outbound<br/>restore inbound<br/>block prescribing"]
-    end
-
-    guard <-->|"pseudonymised"| or(["OpenRouter<br/><i>external</i>"])
-
-    subgraph net["longevity-net · private bridge"]
+    subgraph inside["INSIDE — real patient names live here"]
+        direction TB
         mcp["<b>MCP server</b><br/>find_patient · biomarkers<br/>risks · search_guidelines"]
         api["<b>FastAPI</b><br/>async · RBAC · audit"]
         pg[("Postgres<br/><i>clinical store</i>")]
         rd[("Redis<br/><i>risk cache</i>")]
         ml["<b>MLflow</b><br/>RiskRouter pyfunc<br/>5 models + SHAP"]
-        rag["Guideline corpus<br/><i>TF-IDF / MiniLM</i>"]
+        rag["<b>Guidelines</b><br/><i>TF-IDF / MiniLM</i>"]
+        mcp --> api
+        api --> pg
+        api --> rd
+        api -->|"5 concurrent calls<br/>asyncio.gather"| ml
+        api --> rag
     end
 
-    mcp --> api
-    api --> pg
-    api --> rd
-    api -->|"5 concurrent calls<br/>asyncio.gather"| ml
-    api --> rag
-    api -.->|"OTEL_ENABLED=true"| px["Phoenix<br/><i>PHI-scrubbed spans</i>"]
+    guard{{"<b>GUARD PROXY</b> :9200<br/>─────────────<br/>names ➜ pseudonyms<br/>pseudonyms ➜ names<br/>prescriptions blocked"}}
 
-    style guard fill:#fde8e8,stroke:#c53030,stroke-width:2px
-    style boundary fill:#fff5f5,stroke:#c53030,stroke-dasharray: 4 4
-    style px stroke-dasharray: 4 4
+    guard ==>|"<b>pseudonymised only</b>"| or
+    api -.->|"OTEL_ENABLED=true"| px
+
+    subgraph outside["OUTSIDE — never sees a real name"]
+        or(["OpenRouter<br/><i>third-party LLM</i>"])
+    end
+
+    px["Phoenix<br/><i>PHI-scrubbed spans</i>"]
+
+    classDef guardStyle fill:#b91c1c,stroke:#7f1d1d,stroke-width:3px,color:#ffffff
+    classDef extStyle fill:#78350f,stroke:#451a03,stroke-width:2px,color:#ffffff
+    classDef optStyle stroke-dasharray:5 5
+
+    class guard guardStyle
+    class or extStyle
+    class px optStyle
 ```
+
+**What the guard proxy is, and why it is drawn as the boundary.** It is an
+OpenAI-compatible HTTP proxy that LibreChat points its `baseURL` at, so *every*
+request to the language model passes through it. It is the only component in the
+system that sees the model's prose, which makes it the only place two rules can
+actually be enforced rather than requested:
+
+- **Outbound** — "Maya Cohen" is rewritten to a stable pseudonym before the
+  request leaves. OpenRouter never receives a real patient name.
+- **Inbound** — the pseudonym is rewritten back before the answer reaches the
+  doctor, and before any tool call is dispatched, so `find_patient` still receives
+  the real name and the doctor still reads "Maya Cohen".
+- **Prescribing** — the reply is inspected and prescribing instructions are
+  redacted before they can be displayed. Streaming is buffered on purpose: you
+  cannot retract tokens already on screen.
+
+Everything in the **INSIDE** box runs on a private Docker network and handles real
+identifiers. **OUTSIDE** is the third party. The guard is the one door between
+them — that is what "trust boundary" means here. Measured: the raw model produced
+prescribing language in **13 of 22** recorded runs; **0 of 22** survived the guard.
 
 ### Where each flag acts
 
