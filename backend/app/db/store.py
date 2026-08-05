@@ -32,7 +32,36 @@ from ..core.config import settings
 from .sqlite import open_db
 from .models import biomarkers as biomarkers_table
 from .models import demographics as demographics_table
+from .models import audit_log as audit_log_table
+from .models import care_team as care_team_table
 from .models import risks as risks_table
+
+
+@dataclass(frozen=True)
+class AuditEntry:
+    """One access decision, allowed or refused."""
+
+    occurred_at: str
+    actor_id: str
+    actor_role: str
+    action: str
+    decision: str
+    patient_id: str | None = None
+    reason: str | None = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class PatientMatch:
+    """A name lookup result. Carries no PHI beyond the id and the name asked for."""
+
+    patient_id: str
+    first_name: str
+    last_name: str
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}"
 
 
 @dataclass(frozen=True)
@@ -74,8 +103,48 @@ class ClinicalStore(Protocol):
         """The append log as an ascending series per risk code."""
         ...
 
+    async def find_patients(self, query: str) -> list[PatientMatch]:
+        """Patients whose name matches ``query`` (case-insensitive substring)."""
+        ...
+
+    async def fetch_care_team(self, actor_id: str) -> set[str]:
+        """Patient ids assigned to this actor. Empty in clinic_wide mode."""
+        ...
+
+    async def record_audit(self, entry: AuditEntry) -> None:
+        """Append one access decision. Never raises into the request path."""
+        ...
+
     async def close(self) -> None:
         ...
+
+
+# The RBAC tables are additions, and data/generate_db.py stays untouched as the
+# canonical fixture definition, so the SQLite backend creates them on demand.
+_SQLITE_RBAC_DDL = (
+    """
+    CREATE TABLE IF NOT EXISTS care_team (
+        actor_id   TEXT NOT NULL,
+        patient_id TEXT NOT NULL,
+        PRIMARY KEY (actor_id, patient_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS audit_log (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        occurred_at TEXT NOT NULL,
+        actor_id    TEXT NOT NULL,
+        actor_role  TEXT NOT NULL,
+        action      TEXT NOT NULL,
+        patient_id  TEXT,
+        decision    TEXT NOT NULL,
+        reason      TEXT,
+        detail      TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id, occurred_at)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_patient ON audit_log(patient_id, occurred_at)",
+)
 
 
 def direction(points: list[Mapping[str, Any]]) -> str:
@@ -223,6 +292,52 @@ class SqliteStore:
             )
         return _trim(trends, limit_per_risk)
 
+    async def _ensure_rbac_tables(self, db: aiosqlite.Connection) -> None:
+        for statement in _SQLITE_RBAC_DDL:
+            await db.execute(statement)
+
+    async def find_patients(self, query: str) -> list[PatientMatch]:
+        needle = f"%{query.strip().lower()}%"
+        async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT patient_id, first_name, last_name FROM demographics
+                WHERE lower(first_name) LIKE ?
+                   OR lower(last_name) LIKE ?
+                   OR lower(first_name || ' ' || last_name) LIKE ?
+                ORDER BY last_name, first_name
+                """,
+                (needle, needle, needle),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            PatientMatch(r["patient_id"], r["first_name"], r["last_name"]) for r in rows
+        ]
+
+    async def fetch_care_team(self, actor_id: str) -> set[str]:
+        async with self._connect() as db:
+            await self._ensure_rbac_tables(db)
+            async with db.execute(
+                "SELECT patient_id FROM care_team WHERE actor_id = ?", (actor_id,)
+            ) as cur:
+                return {row["patient_id"] for row in await cur.fetchall()}
+
+    async def record_audit(self, entry: AuditEntry) -> None:
+        async with self._connect() as db:
+            await self._ensure_rbac_tables(db)
+            await db.execute(
+                """
+                INSERT INTO audit_log (occurred_at, actor_id, actor_role, action,
+                                       patient_id, decision, reason, detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry.occurred_at, entry.actor_id, entry.actor_role, entry.action,
+                    entry.patient_id, entry.decision, entry.reason, entry.detail,
+                ),
+            )
+            await db.commit()
+
     async def close(self) -> None:  # nothing pooled
         return None
 
@@ -365,6 +480,48 @@ class PostgresStore:
                 }
             )
         return _trim(trends, limit_per_risk)
+
+    async def find_patients(self, query: str) -> list[PatientMatch]:
+        needle = f"%{query.strip().lower()}%"
+        statement = text(
+            """
+            SELECT patient_id, first_name, last_name FROM demographics
+            WHERE lower(first_name) LIKE :q
+               OR lower(last_name) LIKE :q
+               OR lower(first_name || ' ' || last_name) LIKE :q
+            ORDER BY last_name, first_name
+            """
+        )
+        async with self._session() as session:
+            rows = (await session.execute(statement, {"q": needle})).all()
+        return [PatientMatch(pid, first, last) for pid, first, last in rows]
+
+    async def fetch_care_team(self, actor_id: str) -> set[str]:
+        async with self._session() as session:
+            rows = (
+                await session.execute(
+                    select(care_team_table.c.patient_id).where(
+                        care_team_table.c.actor_id == actor_id
+                    )
+                )
+            ).all()
+        return {pid for (pid,) in rows}
+
+    async def record_audit(self, entry: AuditEntry) -> None:
+        async with self._session() as session:
+            await session.execute(
+                insert(audit_log_table).values(
+                    occurred_at=entry.occurred_at,
+                    actor_id=entry.actor_id,
+                    actor_role=entry.actor_role,
+                    action=entry.action,
+                    patient_id=entry.patient_id,
+                    decision=entry.decision,
+                    reason=entry.reason,
+                    detail=entry.detail,
+                )
+            )
+            await session.commit()
 
     async def close(self) -> None:
         await self._engine.dispose()

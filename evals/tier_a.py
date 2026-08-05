@@ -114,6 +114,8 @@ async def _check_fact(
         return await _check_determinism(client, case, fact)
     if kind == "no_fabrication":
         return _check_no_fabrication_contract(case, fact, payloads, errors)
+    if kind == "find_patient":
+        return await _check_find_patient(client, fact)
     if kind == "no_percentage_attribution":
         return [
             Check(
@@ -386,6 +388,57 @@ def _check_drivers(
                 sorted(surfaced),
             )
         )
+    return checks
+
+
+async def _check_find_patient(client: Any, fact: dict[str, Any]) -> list[Check]:
+    """Server-side name resolution: the tool that replaced the prompt roster.
+
+    Deterministic, so it belongs here rather than in the LLM tier.
+    """
+    query = fact["query"]
+    expected = list(fact.get("expect_ids", []))
+    name = f"find_patient:{query}"
+
+    try:
+        payload = await call_tool(client, "find_patient", {"name": query})
+    except ToolCallError as exc:
+        return [Check(name, "tool_contract", FAIL, exc.message[:200], expected)]
+
+    matches = payload.get("matches") or []
+    found = [m.get("patient_id") for m in matches]
+    ok = found == expected
+    checks = [
+        Check(
+            name,
+            "tool_contract",
+            PASS if ok else FAIL,
+            "" if ok else f"resolved to {found}",
+            expected,
+            found,
+        )
+    ]
+
+    # A name lookup is the easiest place to leak identifiers, so assert the
+    # response carries nothing beyond the id and the name.
+    leaked = sorted(
+        {
+            key
+            for m in matches
+            for key in m
+            if key.lower() in {"mrn", "date_of_birth", "dob", "ssn", "address"}
+        }
+    )
+    checks.append(
+        Check(
+            f"{name}:no_phi",
+            "phi",
+            PASS if not leaked else FAIL,
+            "" if not leaked else f"leaked {leaked}",
+            "id and name only",
+            sorted({k for m in matches for k in m}),
+        )
+    )
     return checks
 
 

@@ -25,6 +25,20 @@ class ModelServerError(RuntimeError):
     """
 
 
+class AccessDeniedError(PermissionError):
+    """The caller is known but not permitted. -> HTTP 403.
+
+    Deliberately distinct from 404: telling an unauthorised caller "no such
+    patient" would be a small lie, and telling them "exists but forbidden" leaks
+    existence. We return 403 with the reason and record the denial in the audit
+    log, which is where that question belongs.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 class IncompletePatientDataError(ValueError):
     """A feature a model requires is missing from the record. -> HTTP 422.
 

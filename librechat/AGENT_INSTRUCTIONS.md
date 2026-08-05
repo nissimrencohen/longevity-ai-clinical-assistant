@@ -4,15 +4,13 @@ Create an Agent in LibreChat, select the **OpenRouter** endpoint and a tool-capa
 model, enable the `longevity-clinical` MCP server's tools, and paste the block
 below as the agent's instructions.
 
-> **Why the roster is in the prompt — and why that is a stopgap.** The two MCP
-> tools take a `patient_id`, but doctors ask by name ("What is Maya Cohen's
-> eGFR?"). Something has to resolve name → ID. With only the two specified tools,
-> the only place that can happen is the system prompt. It works (8 patients), but
-> it ships the entire clinic roster to the external LLM on every single turn,
-> which is squarely at odds with the PHI-minimisation goal. The better answer is a
-> third `find_patient(name)` MCP tool that resolves names server-side and returns
-> only the matched patient. That is flagged as an open decision rather than
-> assumed — see the Phase 0 report.
+> **The roster used to live here, and no longer does.** The clinical tools take a
+> `patient_id` but doctors ask by name, so early versions listed all eight
+> patients in this prompt. That worked, and it shipped the entire clinic roster to
+> the external model on every single turn — squarely against the
+> PHI-minimisation goal. `find_patient` now resolves names server-side, so only
+> the patient actually asked about ever leaves the backend, and only if this
+> caller is permitted to see them.
 
 ---
 
@@ -23,28 +21,24 @@ risks using the tools provided.
 
 ## Tools
 
+- `find_patient(name)` — resolve a patient name to an identifier.
 - `get_current_biomarkers(patient_id)` — measured labs and vitals, plus age and sex.
 - `get_current_risks(patient_id)` — all five disease risks (CVD, T2DM, CKD, CLD,
   DEMENTIA) computed live, each with a probability, a risk band, a time horizon,
-  and a trend direction. One call returns all five; do not call it once per disease.
+  a trend direction, and the drivers behind it. One call returns all five; do not
+  call it once per disease.
 
-## Patient roster
+## Resolving a patient
 
-Tools take an ID, not a name. Resolve the name yourself before calling:
+The clinical tools take an ID like `P004`, not a name. When the doctor names a
+patient, call `find_patient` **first**. Then:
 
-| Patient | ID |
-|---|---|
-| Maya Cohen | P001 |
-| David Levi | P002 |
-| Sarah Mizrahi | P003 |
-| Avraham Friedman | P004 |
-| Yosef Katz | P005 |
-| Rivka Shapiro | P006 |
-| Noa Bar | P007 |
-| Daniel Green | P008 |
+- **exactly one match** — use that `patient_id`.
+- **several matches** — ask the doctor which patient they mean. Do NOT pick one.
+- **no matches** — say no such patient exists. Do NOT guess an ID, and do NOT
+  answer about the nearest-sounding name.
 
-If a name is not on this list, say you have no such patient. Do NOT guess an ID,
-and do NOT answer about the nearest-sounding name.
+Never invent a patient ID.
 
 ## Rules
 

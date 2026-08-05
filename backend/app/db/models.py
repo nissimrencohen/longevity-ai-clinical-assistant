@@ -100,6 +100,46 @@ biomarkers = Table(
     Index("idx_biomarkers_patient", "patient_id", "measured_at"),
 )
 
+# Who may see which patient, when RBAC_MODE=care_team. Empty in the default
+# clinic_wide model, which is the brief's "all doctors see all patients".
+care_team = Table(
+    "care_team",
+    metadata,
+    Column("actor_id", String, primary_key=True),
+    Column(
+        "patient_id",
+        String,
+        ForeignKey("demographics.patient_id"),
+        primary_key=True,
+    ),
+)
+
+# Append-only record of every access decision.
+#
+# This is the artefact a HIPAA auditor actually asks for, and the thing the
+# original design most conspicuously lacked: without it there is no way to answer
+# "who looked at this patient, and when". Denials are recorded too — an attempt
+# that was refused is often more interesting than one that succeeded.
+#
+# In Postgres the intended production grant is INSERT + SELECT only, so rows
+# cannot be edited or deleted after the fact; that is a deployment concern rather
+# than a schema one and is noted in COMPOSE.md.
+audit_log = Table(
+    "audit_log",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("occurred_at", String, nullable=False),
+    Column("actor_id", String, nullable=False),
+    Column("actor_role", String, nullable=False),
+    Column("action", String, nullable=False),
+    Column("patient_id", String),
+    Column("decision", String, nullable=False),  # allow | deny
+    Column("reason", String),
+    Column("detail", Text),
+    Index("idx_audit_actor", "actor_id", "occurred_at"),
+    Index("idx_audit_patient", "patient_id", "occurred_at"),
+)
+
 risks = Table(
     "risks",
     metadata,

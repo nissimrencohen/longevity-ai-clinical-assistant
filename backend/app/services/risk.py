@@ -23,10 +23,24 @@ import json
 from datetime import date, datetime, timezone
 from typing import Any
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
-from ..core.errors import IncompletePatientDataError, PatientNotFoundError
-from ..db.store import ClinicalStore, RiskRow, SqliteStore, direction
+from ..core.config import settings
+from ..core.errors import (
+    AccessDeniedError,
+    IncompletePatientDataError,
+    PatientNotFoundError,
+)
+from ..core.phi import bucket_age, deidentify_name
+from ..core.security import DEFAULT_ACTOR, Action, Actor, can
+from ..db.store import (
+    AuditEntry,
+    ClinicalStore,
+    PatientMatch,
+    RiskRow,
+    SqliteStore,
+    direction,
+)
 from ..schemas import (
     BiomarkerSnapshot,
     BiomarkersResponse,
@@ -112,18 +126,97 @@ class RiskService:
             raise PatientNotFoundError(patient_id)
         return record
 
-    async def get_current_biomarkers(self, patient_id: str) -> BiomarkersResponse:
+    # -- access control ---------------------------------------------------
+
+    async def _authorise(
+        self, actor: Actor, action: Action, patient_id: str | None = None
+    ) -> None:
+        """Check policy and record the decision. Raises on denial.
+
+        Both outcomes are audited. An attempt that was refused is often more
+        interesting than one that succeeded, and a log that only records
+        successes cannot answer the question an auditor actually asks.
+        """
+        scoped = actor
+        if settings.rbac_mode == "care_team" and not actor.care_team_patients:
+            assigned = await self._store.fetch_care_team(actor.actor_id)
+            scoped = replace(actor, care_team_patients=frozenset(assigned))
+
+        decision = can(
+            scoped, action, patient_id=patient_id, scope_mode=settings.rbac_mode
+        )
+        await self._audit(scoped, action, patient_id, decision)
+        if not decision.allowed:
+            raise AccessDeniedError(decision.reason)
+
+    async def _audit(
+        self, actor: Actor, action: Action, patient_id: str | None, decision
+    ) -> None:
+        if not settings.audit_enabled:
+            return
+        entry = AuditEntry(
+            occurred_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            actor_id=actor.actor_id,
+            actor_role=str(actor.role),
+            action=str(action),
+            patient_id=patient_id,
+            decision="allow" if decision.allowed else "deny",
+            reason=decision.reason or None,
+            detail=f"rbac_mode={settings.rbac_mode}",
+        )
+        try:
+            await self._store.record_audit(entry)
+        except Exception:  # noqa: BLE001
+            # An audit-store failure must not take down clinical care. It is
+            # logged upstream by the store; the request proceeds.
+            return
+
+    # -- patient lookup ---------------------------------------------------
+
+    async def find_patients(
+        self, query: str, *, actor: Actor = DEFAULT_ACTOR
+    ) -> list[PatientMatch]:
+        """Resolve a name to patient ids, server-side and access-controlled.
+
+        Replaces shipping the whole clinic roster in the system prompt: only the
+        patients matching this query, and only those this actor may see, ever
+        leave the backend.
+        """
+        await self._authorise(actor, Action.FIND_PATIENT)
+        matches = await self._store.find_patients(query)
+
+        if settings.rbac_mode == "care_team":
+            assigned = actor.care_team_patients or frozenset(
+                await self._store.fetch_care_team(actor.actor_id)
+            )
+            matches = [m for m in matches if m.patient_id in assigned]
+        return matches
+
+    async def get_current_biomarkers(
+        self, patient_id: str, *, actor: Actor = DEFAULT_ACTOR
+    ) -> BiomarkersResponse:
         """Latest biomarker snapshot for a patient (404 if unknown)."""
+        await self._authorise(actor, Action.READ_BIOMARKERS, patient_id)
         demographics, biomarkers = await self._load_record(patient_id)
         if not biomarkers:
             raise IncompletePatientDataError(patient_id, ["biomarkers"])
 
+        # Safe Harbor: ages over 89 are re-identifying, so they are reported as
+        # a bucket rather than a true value.
+        true_age = whole_years(
+            date.fromisoformat(str(demographics["date_of_birth"])), self._today
+        )
+        age_years, age_label = bucket_age(true_age)
+
+        name = f"{demographics['first_name']} {demographics['last_name']}"
+        if actor.deidentified:
+            name = deidentify_name(patient_id)
+
         return BiomarkersResponse(
             patient_id=patient_id,
-            name=f"{demographics['first_name']} {demographics['last_name']}",
-            age_years=whole_years(
-                date.fromisoformat(str(demographics["date_of_birth"])), self._today
-            ),
+            name=name,
+            age_years=age_years,
+            age_label=age_label,
             sex=demographics["sex"],
             biomarkers=BiomarkerSnapshot(**{**biomarkers, "patient_id": patient_id}),
         )
@@ -178,8 +271,18 @@ class RiskService:
             },
         )
 
-    async def get_current_risks(self, patient_id: str) -> RisksResponse:
+    async def get_current_risks(
+        self, patient_id: str, *, actor: Actor = DEFAULT_ACTOR
+    ) -> RisksResponse:
         """Compute all five risks live, append them, and return them with trends."""
+        await self._authorise(actor, Action.READ_RISKS, patient_id)
+        # Reading a risk and WRITING it into the patient's permanent record are
+        # separate acts. A nurse may see the panel; the trend is a clinical
+        # record and only a physician adds to it.
+        may_persist = can(
+            actor, Action.PERSIST_RISKS, scope_mode=settings.rbac_mode
+        ).allowed
+
         demographics, biomarkers = await self._load_record(patient_id)
         derived = derive_features({**demographics, **biomarkers}, today=self._today)
 
@@ -239,7 +342,7 @@ class RiskService:
                 )
             )
 
-        written = await self._store.append_risks(pending)
+        written = await self._store.append_risks(pending) if may_persist else []
         persisted = {row.risk_code for row in written}
 
         # Populate the cache only after a successful computation, and store the
@@ -272,9 +375,13 @@ class RiskService:
             for spec, result in zip(MODEL_SPECS, scored, strict=True)
         ]
 
+        name = f"{demographics['first_name']} {demographics['last_name']}"
+        if actor.deidentified:
+            name = deidentify_name(patient_id)
+
         return RisksResponse(
             patient_id=patient_id,
-            name=f"{demographics['first_name']} {demographics['last_name']}",
+            name=name,
             computed_at=now,
             risks=risks,
             trends={

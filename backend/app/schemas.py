@@ -34,10 +34,26 @@ class BiomarkerSnapshot(BaseModel):
 
 class BiomarkersResponse(BaseModel):
     patient_id: str
+    # For a de-identified role this is a stable pseudonym, not a real name.
     name: str
     age_years: int
+    # Set to "90+" when the true age exceeds the HIPAA Safe Harbor cap, so text
+    # downstream can say "90+" without inventing a specific number.
+    age_label: str | None = None
     sex: str
     biomarkers: BiomarkerSnapshot
+
+
+class PatientMatchResult(BaseModel):
+    """One name-lookup hit. Carries the id and the name only — never MRN or DOB."""
+
+    patient_id: str
+    name: str
+
+
+class FindPatientResponse(BaseModel):
+    query: str
+    matches: list[PatientMatchResult] = Field(default_factory=list)
 
 
 class RiskDriver(BaseModel):

@@ -53,5 +53,16 @@ class Settings(BaseSettings):
     # is about bounding staleness of `computed_at`, not correctness.
     cache_ttl_s: int = 3600
 
+    # --- Access control ---------------------------------------------------
+    # "clinic_wide" is the brief's model: every doctor sees every patient. It
+    # stays the DEFAULT. "care_team" restricts each actor to their assigned
+    # patients via the care_team table — one config value flips the clinic
+    # between the two, which is the point of writing the policy down.
+    rbac_mode: Literal["clinic_wide", "care_team"] = "clinic_wide"
+
+    # Audit is NOT conditional on restricting access. Recording who looked at
+    # what is worth doing even when everyone may look at everything.
+    audit_enabled: bool = True
+
 
 settings = Settings()
