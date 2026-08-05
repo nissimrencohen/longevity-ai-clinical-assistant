@@ -4,20 +4,24 @@
 >
 > This page is the original brief. My writeup is [`SOLUTION.md`](SOLUTION.md) —
 > what was built, why, how to run it, and an honest account of the trade-offs.
-> It opens with a 5-minute path.
+> It opens with a contents list and **two independent ways to run it**:
 >
-> **Two commands to see it working — no API key needed:**
+> | | | |
+> |---|---|---|
+> | **[Path A](SOLUTION.md#path-a--talk-to-it-the-full-setup)** | Ask it questions in the chat UI — the real thing | needs an OpenRouter key, ~10 min |
+> | **[Path B](SOLUTION.md#path-b--verify-it-without-an-api-key)** | Verify it works — no signup, no cost | ~2 min |
+>
+> Path B is two commands:
 > ```bash
 > cp .env.example .env && docker compose up -d --wait
 > uv run python evals/harness.py --tier a
 > ```
-> `.env.example` works as-is. **The chat UI needs a second, separate `.env` in your
-> LibreChat checkout** (`OPENROUTER_KEY` + a matching `MCP_BEARER_TOKEN`) —
-> [`librechat/env.notes.md`](librechat/env.notes.md) and
-> [`SOLUTION.md` Step 3](SOLUTION.md#step-3--the-chat-ui).
+> `.env.example` works as-is. The chat UI needs a **second, separate `.env`** in
+> your LibreChat checkout (`OPENROUTER_KEY` + a matching `MCP_BEARER_TOKEN`) —
+> see [`librechat/env.notes.md`](librechat/env.notes.md).
 >
-> **Then run [`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 copy-paste chat queries
-> with an answer key verified against the database.
+> **Either way, then run [`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 copy-paste
+> chat queries with an answer key verified against the database.
 >
 > Status: 332 tests · Tier A 100% · Tier B 96.4% · both bonus tracks done.
 >
