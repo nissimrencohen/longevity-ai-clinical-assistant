@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -40,6 +41,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .deidentify import PhiRedactor
 from .policy import enforce
 
 logger = logging.getLogger("guard")
@@ -47,6 +49,16 @@ logger = logging.getLogger("guard")
 UPSTREAM_BASE_URL = os.getenv("GUARD_UPSTREAM_URL", "https://openrouter.ai/api/v1")
 UPSTREAM_TIMEOUT_S = float(os.getenv("GUARD_TIMEOUT_S", "180"))
 FALLBACK_KEY = os.getenv("OPENROUTER_KEY", "")
+
+# Inbound PHI de-identification. Needs the clinic roster from the backend to know
+# which words are names; if that is unreachable the guard runs WITHOUT scrubbing
+# and says so loudly rather than refusing to serve. That is a deliberate choice
+# for this exercise on synthetic data — for real PHI, set GUARD_PHI_FAIL_CLOSED
+# so an unavailable roster stops traffic instead of silently downgrading it.
+PHI_DEIDENTIFY = os.getenv("GUARD_PHI_DEIDENTIFY", "true").lower() != "false"
+PHI_FAIL_CLOSED = os.getenv("GUARD_PHI_FAIL_CLOSED", "false").lower() == "true"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8001")
+PHI_TERMS_TTL_S = float(os.getenv("GUARD_PHI_TERMS_TTL_S", "300"))
 
 # Headers we must not forward verbatim (hop-by-hop or recomputed downstream).
 _STRIP_REQUEST_HEADERS = {"host", "content-length", "accept-encoding", "connection"}
@@ -61,15 +73,48 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         base_url=UPSTREAM_BASE_URL, timeout=UPSTREAM_TIMEOUT_S
     ) as client:
         app.state.upstream = client
+        app.state.redactor = PhiRedactor()
+        app.state.phi_loaded_at = 0.0
         yield
 
 
 app = FastAPI(title="Clinical Safety Guard", version="1.0.0", lifespan=lifespan)
 
 
+async def get_redactor(app: FastAPI) -> PhiRedactor:
+    """The roster, refreshed periodically. Never fatal to a request."""
+    redactor: PhiRedactor = getattr(app.state, "redactor", None) or PhiRedactor()
+    if not PHI_DEIDENTIFY:
+        return redactor
+
+    age = time.monotonic() - getattr(app.state, "phi_loaded_at", 0.0)
+    if redactor.active and age < PHI_TERMS_TTL_S:
+        return redactor
+
+    try:
+        async with httpx.AsyncClient(base_url=BACKEND_URL, timeout=10) as http:
+            response = await http.get("/api/v1/phi_terms")
+            response.raise_for_status()
+            names = tuple(response.json().get("names") or ())
+        redactor.rebuild(names)
+        app.state.redactor = redactor
+        app.state.phi_loaded_at = time.monotonic()
+        logger.info("phi.terms loaded (%d names)", len(names))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("phi.terms unavailable, de-identification degraded: %s", exc)
+    return redactor
+
+
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "clinical-safety-guard", "upstream": UPSTREAM_BASE_URL}
+async def health() -> dict[str, Any]:
+    redactor = await get_redactor(app)
+    return {
+        "status": "ok",
+        "service": "clinical-safety-guard",
+        "upstream": UPSTREAM_BASE_URL,
+        "phi_deidentify": PHI_DEIDENTIFY,
+        "phi_terms_loaded": len(redactor.names),
+    }
 
 
 def _forward_headers(request: Request) -> dict[str, str]:
@@ -104,6 +149,26 @@ async def chat_completions(request: Request) -> Any:
     headers = _forward_headers(request)
     streaming = bool(payload.get("stream"))
 
+    # Inbound PHI boundary: names are replaced with stable tokens before the
+    # request leaves for the third-party model, and restored on the way back.
+    redactor = await get_redactor(request.app)
+    if PHI_DEIDENTIFY and redactor.active and isinstance(payload.get("messages"), list):
+        payload["messages"], _ = redactor.scrub_messages(payload["messages"])
+        body = json.dumps(payload).encode("utf-8")
+    elif PHI_DEIDENTIFY and PHI_FAIL_CLOSED and not redactor.active:
+        # No roster means no guarantee. Refuse rather than quietly downgrade.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": {
+                    "message": (
+                        "PHI de-identification is enabled but the term list is "
+                        "unavailable; refusing to forward the request."
+                    )
+                }
+            },
+        )
+
     if not streaming:
         response = await upstream.post("/chat/completions", content=body, headers=headers)
         if response.status_code != httpx.codes.OK:
@@ -111,10 +176,10 @@ async def chat_completions(request: Request) -> Any:
                 status_code=response.status_code,
                 content=_safe_json(response),
             )
-        return JSONResponse(content=_guard_response(response.json()))
+        return JSONResponse(content=_guard_response(response.json(), redactor))
 
     return StreamingResponse(
-        _guarded_stream(upstream, body, headers),
+        _guarded_stream(upstream, body, headers, redactor),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -127,13 +192,29 @@ def _safe_json(response: httpx.Response) -> Any:
         return {"error": {"message": response.text[:1000]}}
 
 
-def _guard_response(data: dict) -> dict:
+def _guard_response(data: dict, redactor: PhiRedactor | None = None) -> dict:
     """Apply policy to every choice in a non-streaming completion."""
     for choice in data.get("choices", []):
         message = choice.get("message") or {}
+
+        # Tool arguments must carry REAL names: LibreChat executes them against
+        # MCP, which is inside the trust boundary. Skipping this would break tool
+        # calling, and a scrubber that breaks the product gets switched off.
+        if redactor is not None and isinstance(message.get("tool_calls"), list):
+            message["tool_calls"] = [
+                redactor.restore_tool_call(call) for call in message["tool_calls"]
+            ]
+
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             continue  # tool-call turns carry no prose to guard
+
+        # Restore before policy so the prescribing rules see real text, and so
+        # the clinician reads a name rather than a token.
+        if redactor is not None:
+            content = redactor.restore(content)
+            message["content"] = content
+
         verdict = enforce(content)
         _audit(verdict, streaming=False)
         if verdict.triggered:
@@ -144,7 +225,10 @@ def _guard_response(data: dict) -> dict:
 
 
 async def _guarded_stream(
-    upstream: httpx.AsyncClient, body: bytes, headers: dict[str, str]
+    upstream: httpx.AsyncClient,
+    body: bytes,
+    headers: dict[str, str],
+    redactor: PhiRedactor | None = None,
 ) -> AsyncIterator[bytes]:
     """Buffer the upstream stream, apply policy, then emit.
 
@@ -183,10 +267,17 @@ async def _guarded_stream(
                 if isinstance(piece, str):
                     content_parts.append(piece)
 
-    verdict = enforce("".join(content_parts))
+    spoken = "".join(content_parts)
+    # Restore names before policy and before the clinician sees it.
+    if redactor is not None:
+        restored = redactor.restore(spoken)
+        if restored != spoken:
+            spoken = restored
+            raw_lines = []  # force a rebuilt stream carrying the restored text
+    verdict = enforce(spoken)
     _audit(verdict, streaming=True)
 
-    if not verdict.triggered:
+    if not verdict.triggered and raw_lines:
         # Nothing to change — replay upstream verbatim so tool calls, usage and
         # finish reasons survive untouched.
         for line in raw_lines:
@@ -203,7 +294,9 @@ async def _guarded_stream(
         "model": (template or {}).get("model", "guarded"),
     }
     yield _sse({**base, "choices": [{"index": 0, "delta": {"role": "assistant"}}]})
-    yield _sse({**base, "choices": [{"index": 0, "delta": {"content": verdict.text}}]})
+    yield _sse(
+        {**base, "choices": [{"index": 0, "delta": {"content": verdict.text if verdict.triggered else spoken}}]}
+    )
     yield _sse(
         {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
     )

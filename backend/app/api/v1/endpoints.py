@@ -80,6 +80,28 @@ async def find_patient(
     )
 
 
+@router.get("/phi_terms")
+async def phi_terms(
+    service: RiskService = Depends(get_risk_service),
+    actor: Actor = Depends(get_actor),
+) -> dict:
+    """Terms the PHI boundary must scrub before text reaches an external LLM.
+
+    INTERNAL. Consumed only by the guard proxy, over the private compose network;
+    the backend publishes no host port. It returns patient NAMES and nothing else
+    — no MRN, no date of birth — because that is all the scrubber needs to
+    recognise an identifier in free text.
+
+    There is an obvious tension in an endpoint that hands out the roster, and it
+    is the right trade: the alternative is the guard guessing at names
+    heuristically, which both misses real ones and mangles ordinary words. The
+    roster stays inside the trust boundary either way; what changes is that it no
+    longer reaches OpenRouter.
+    """
+    matches = await service.find_patients("", actor=actor)
+    return {"names": sorted({m.full_name for m in matches})}
+
+
 @router.get("/search_guidelines", response_model=SearchGuidelinesResponse)
 async def search_guidelines(
     query: str = Query(..., min_length=2, description="What to look up"),
