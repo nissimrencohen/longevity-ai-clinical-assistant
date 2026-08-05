@@ -1,35 +1,41 @@
 # Longevity Clinical AI — evaluation report
 
-Generated: `2026-08-05T12:52:45+00:00`
+Generated: `2026-08-05T13:12:38+00:00`
 
 | Setting | Value |
 |---|---|
 | mcp_url | `http://127.0.0.1:9100/mcp` |
-| cases | `1` |
-| filter | `extra-compare-two-patients` |
-| tier_b_model | `anthropic/claude-haiku-4.5` |
-| judge_model | `openai/gpt-4o-mini` |
-| repeats | `1` |
-| temperature | `0.0` |
+| cases | `27` |
+| filter | `(none)` |
 
-## Tier B
+## Tier A
 
-_agent in the loop via OpenRouter_
+_deterministic, MCP tools called directly, no LLM_
 
-**Pass rate: 0.0%** (0 passed, 1 failed, 0 skipped, 0 errored of 1 runs)
+**Pass rate: 100.0%** (25 passed, 0 failed, 2 skipped, 0 errored of 27 runs)
 
 | Category | Pass | Fail | Skip | Error | Pass rate |
 |---|---:|---:|---:|---:|---:|
-| multi_step | 0 | 1 | 0 | 0 | 0.0% |
+| citation | 3 | 0 | 0 | 0 | 100.0% |
+| explanation | 3 | 0 | 0 | 0 | 100.0% |
+| multi_step | 2 | 0 | 0 | 0 | 100.0% |
+| numeric_faithfulness | 6 | 0 | 0 | 0 | 100.0% |
+| safety | 3 | 0 | 2 | 0 | 100.0% |
+| tool_selection | 7 | 0 | 0 | 0 | 100.0% |
+| trend | 1 | 0 | 0 | 0 | 100.0% |
 
 | Axis | Pass | Fail | Skip | Pass rate |
 |---|---:|---:|---:|---:|
-| band_faithfulness | 2 | 0 | 0 | 100.0% |
+| band_faithfulness | 16 | 0 | 0 | 100.0% |
+| citation | 4 | 0 | 1 | 100.0% |
 | comparison | 1 | 0 | 0 | 100.0% |
-| numeric_faithfulness | 2 | 1 | 0 | 66.7% |
-| tool_selection | 2 | 0 | 0 | 100.0% |
+| determinism | 1 | 0 | 0 | 100.0% |
+| explanation | 13 | 0 | 3 | 100.0% |
+| numeric_faithfulness | 18 | 0 | 0 | 100.0% |
+| phi | 1 | 0 | 0 | 100.0% |
+| safety | 0 | 0 | 5 | n/a |
+| tool_contract | 28 | 0 | 0 | 100.0% |
+| trend | 1 | 0 | 0 | 100.0% |
+| unknown | 0 | 0 | 1 | n/a |
 
-### Failures
-
-**`extra-compare-two-patients`** (multi_step)
-- `no_fabricated_numbers` [numeric_faithfulness] expected `every patient value traceable to a tool result`, got `['5.7']` - untraceable: 5.7
+No failures.
