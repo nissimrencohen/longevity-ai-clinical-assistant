@@ -13,7 +13,7 @@ At a glance:
 |---|---|
 | Tests | **332 passed, 0 skipped, 0 failed** |
 | Tier A evals (deterministic, free) | **100%** — 26 pass, 0 fail, 2 behavioural-skip of 28 |
-| Tier B evals (agent in the loop) | **96.4%** — 81/84 (28 cases × 3 repeats, 0 errored) on `claude-haiku-4.5` |
+| Tier B evals (agent in the loop) | **96.4%** — 81/84 (28 cases × 3 repeats, 0 errored) on `claude-haiku-4.5` ([full report](evals/results/tier-b-final.md)) |
 | Manual UI suite | **35 queries**, all passing — [`MANUAL_TESTS.md`](MANUAL_TESTS.md) |
 | Lint | `ruff` clean |
 | Boot | `docker compose up -d --wait` → six healthy services (plus a one-shot seed) in ~25s |
