@@ -21,22 +21,90 @@ explanation in cited guidance — and refuses to prescribe.
 
 ## Read this in 5 minutes
 
+### There are two `.env` files. Only one is needed to verify the system.
+
+| File | Used by | Needs an API key? |
+|---|---|---|
+| **`.env`** in this repo (from `.env.example`) | backend, MCP server, eval harness | **No** — not for the stack, `pytest`, or Tier A |
+| **`.env`** in your **LibreChat checkout** | the chat UI only | Yes — `OPENROUTER_KEY` |
+
+They are separate files in separate projects. The only value that must **match**
+across them is `MCP_BEARER_TOKEN`, because LibreChat sends it as the
+`Authorization: Bearer` header to the MCP server. A mismatch is the first thing to
+check on a `401`.
+
+### Step 1 — the whole system, no API key, no cost
+
 ```bash
-cp .env.example .env
+cp .env.example .env             # works as-is; nothing to edit
 docker compose up -d --wait      # six services, ~25s; exits 0 only when all are serving
-uv run python evals/harness.py --tier a    # deterministic evals — no API key, no cost
+uv run pytest                    # 318 passed, 8 service-gated skips
+uv run python evals/harness.py --tier a       # deterministic evals: 100%
 ```
 
-Then, if you have time for two more things:
+This exercises every tool, both endpoints, the five models, SHAP, retrieval with
+citation verification, RBAC and the guard's policy engine — with **no LLM in the
+loop at all**. If you only do one thing, do this.
+
+### Step 2 — with a model actually calling the tools
+
+Add your key to the repo `.env` (the harness reads it from there):
+
+```bash
+echo "OPENROUTER_KEY=sk-or-..." >> .env
+uv run python evals/harness.py --tier b --repeats 3 --model anthropic/claude-haiku-4.5
+```
+
+Expect **96.4%** — 81 of 84. Without `--model` it uses a *free* model that is poor
+at tool calling and scores ~7%; the harness prints a warning saying so, because
+that number measures the model, not the system.
+
+### Step 3 — the chat UI
+
+Clone [LibreChat `v0.8.7`](https://github.com/danny-avila/LibreChat), then:
+
+```bash
+cp librechat/librechat.yaml <librechat-checkout>/librechat.yaml
+```
+
+Now LibreChat's **own** `.env`. Build it from *its* `.env.example` — it holds
+session-signing secrets, so it is not committed here — and set two lines:
+
+```bash
+OPENROUTER_KEY=sk-or-...                          # present but commented out; uncomment and set
+MCP_BEARER_TOKEN=dev-longevity-token-change-me    # NOT in its example — add the line
+```
+
+📄 **Full detail: [`librechat/env.notes.md`](librechat/env.notes.md)** — which of
+LibreChat's own secrets matter (`CREDS_KEY`, `CREDS_IV`, `JWT_SECRET`,
+`JWT_REFRESH_SECRET`), and why `MCP_BEARER_TOKEN` works even though LibreChat has
+never heard of it: `deploy-compose.yml` loads the whole `.env` into the container,
+and `librechat.yaml` interpolates any `${VAR}` from that environment. Adding the
+line is all it takes.
+
+> `MCP_BEARER_TOKEN` must be **identical** in both `.env` files. This is the single
+> most common failure: the MCP server answers `401`, LibreChat reports the server
+> as connected, and zero tools appear.
+
+```bash
+docker compose -f deploy-compose.yml up -d        # in the LibreChat checkout
+```
+
+Then open **http://localhost:3080** and follow the click-by-click agent setup in
+[§3](#3-how-to-run-it-and-the-feature-flags) — model `anthropic/claude-haiku-4.5`,
+**temperature `0.01`**, all five tools enabled, instructions pasted from
+[`librechat/AGENT_INSTRUCTIONS.md`](librechat/AGENT_INSTRUCTIONS.md).
+
+To put the safety guard in the path, point the endpoint's `baseURL` at
+`http://host.docker.internal:9200/v1`.
+
+### Then, the two things worth your time
 
 1. **Run [`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 copy-paste chat queries with an
    answer key verified against the database. The fastest way to see what the system
    does *and* what it refuses to do.
 2. **Read [§4 Trade-offs](#4-trade-offs-and-what-is-left)** — the honest part: what
    I got wrong, what the tests caught, and the one eval case left failing on purpose.
-
-The chat UI needs LibreChat and an OpenRouter key —
-[§3](#3-how-to-run-it-and-the-feature-flags) has the click-by-click setup.
 
 ### The idea in one paragraph
 
@@ -71,6 +139,30 @@ All of it is **off or defaulted to the assignment's behaviour** unless switched 
 > additions above each need a reason to be worth anything. The 5-minute path is
 > this page down to the diagram; §1 covers the required work; §2 is the reasoning;
 > §4 is what I would fix next.
+
+## Contents
+
+- [Read this in 5 minutes](#read-this-in-5-minutes) — **the two `.env` files**, then
+  three steps: no key → with a model → the chat UI
+  - [Step 1 — no API key, no cost](#step-1--the-whole-system-no-api-key-no-cost)
+  - [Step 2 — a model calling the tools](#step-2--with-a-model-actually-calling-the-tools)
+  - [Step 3 — the chat UI](#step-3--the-chat-ui) (see also
+    [`librechat/env.notes.md`](librechat/env.notes.md))
+- [The idea in one paragraph](#the-idea-in-one-paragraph)
+- [What is here beyond the brief, and why](#what-is-here-beyond-the-brief-and-why)
+  — the additions, each mapped to the failure it prevents
+- [Architecture](#architecture) — diagram, the trust boundary, and
+  [where each flag acts](#where-each-flag-acts)
+- [1. Core requirements and bonuses](#1-core-requirements-and-bonuses) — the six
+  tasks, plus **both** bonus tracks
+- [2. Architectural additions, and why they matter clinically](#2-architectural-additions-and-why-they-matter-clinically)
+  — Postgres · Redis · the safety proxy · SHAP · two-way PHI scrubbing · RBAC ·
+  retrieval · OpenTelemetry
+- [3. How to run it, and the feature flags](#3-how-to-run-it-and-the-feature-flags)
+  — LibreChat click-by-click, flags, test suite
+- [4. Trade-offs and what is left](#4-trade-offs-and-what-is-left) — the
+  GET-that-writes · unit assumptions · what fails and why · where AI tooling was used
+- **[`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 chat queries with a verified answer key
 
 ---
 

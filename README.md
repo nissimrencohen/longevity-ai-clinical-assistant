@@ -6,11 +6,16 @@
 > what was built, why, how to run it, and an honest account of the trade-offs.
 > It opens with a 5-minute path.
 >
-> **Two commands to see it working:**
+> **Two commands to see it working — no API key needed:**
 > ```bash
 > cp .env.example .env && docker compose up -d --wait
 > uv run python evals/harness.py --tier a
 > ```
+> `.env.example` works as-is. **The chat UI needs a second, separate `.env` in your
+> LibreChat checkout** (`OPENROUTER_KEY` + a matching `MCP_BEARER_TOKEN`) —
+> [`librechat/env.notes.md`](librechat/env.notes.md) and
+> [`SOLUTION.md` Step 3](SOLUTION.md#step-3--the-chat-ui).
+>
 > **Then run [`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 copy-paste chat queries
 > with an answer key verified against the database.
 >
