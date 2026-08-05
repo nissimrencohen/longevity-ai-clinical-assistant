@@ -11,7 +11,7 @@ At a glance:
 
 | | |
 |---|---|
-| Tests | **326 passed, 0 skipped, 0 failed** |
+| Tests | **332 passed, 0 skipped, 0 failed** |
 | Tier A evals (deterministic, free) | **100%** — 26 pass, 0 fail, 2 behavioural-skip of 28 |
 | Tier B evals (agent in the loop) | **96.4%** — 81/84 (28 cases × 3 repeats, 0 errored) on `claude-haiku-4.5` |
 | Manual UI suite | **35 queries**, all passing — [`MANUAL_TESTS.md`](MANUAL_TESTS.md) |
@@ -505,9 +505,9 @@ from the healthcheck rather than from surprising results.
 ### Test suite
 
 ```bash
-uv run pytest                    # 318 passed, 8 conditionally skipped
+uv run pytest                    # 324 passed, 8 conditionally skipped
 make up-debug && POSTGRES_DSN="postgresql+asyncpg://clinic:clinic@127.0.0.1:55432/clinic" \
-  uv run pytest                  # 326 passed, 0 skipped
+  uv run pytest                  # 332 passed, 0 skipped
 ```
 
 The 8 skips are integration tests needing MLflow and Postgres on host ports; the
@@ -552,6 +552,25 @@ application-layer engineering changes that. The de-identification boundary means
 a real patient *name* no longer leaves the trust boundary, which is a genuine
 improvement, but it is not compliance. A real deployment moves the LLM tier to a
 covered provider or an in-VPC model. That is procurement, not code.
+
+**The bearer token in the repo is a placeholder, not a leak.**
+`MCP_BEARER_TOKEN=dev-longevity-token-change-me` is committed in `.env.example`
+on purpose, so a fresh clone runs without a setup step. The real `.env` is
+gitignored and has never been committed, the data is synthetic, and there is
+nothing to rotate.
+
+The part that *was* a weakness is that the same string is the **code default**,
+and in this server the token is also the identity — it carries the `physician`
+role. A deployment that forgot to set it would have had a publicly-known
+credential to a clinical API. The MCP server now **refuses to start** if the
+default token is still in use and `APP_ENV` is anything other than
+dev/development/test. Failing to boot is the only behaviour that cannot be
+overlooked; a warning in a log is read after the fact, if at all. Local
+development is untouched, which is the point.
+
+Static bearer tokens are themselves the compromise here: fine for synthetic data,
+wrong for real PHI, where this wants OIDC with short-lived tokens and the role
+claim coming from the identity provider rather than from a lookup table.
 
 **PHI scrubbing covers what it knows about.** Patient names from the clinic
 roster. A doctor who types a date of birth, an address, or free-text detail is not

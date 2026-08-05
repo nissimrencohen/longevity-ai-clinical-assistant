@@ -41,7 +41,12 @@ from pydantic import Field
 REPO_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(REPO_ROOT / ".env")
 
-MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", "dev-longevity-token-change-me")
+# A self-describing placeholder, not a secret: the data is synthetic and this
+# value is committed in .env.example on purpose so a fresh clone runs. What it
+# must never do is survive into a real deployment, where it would be a
+# publicly-known bearer token that also carries the physician role.
+DEV_BEARER_TOKEN = "dev-longevity-token-change-me"
+MCP_BEARER_TOKEN = os.getenv("MCP_BEARER_TOKEN", DEV_BEARER_TOKEN)
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8001")
 HOST = os.getenv("MCP_HOST", "0.0.0.0")
 PORT = int(os.getenv("MCP_PORT", "9000"))
@@ -345,6 +350,23 @@ async def search_guidelines(
 
 
 def main() -> None:
+    # Fail closed outside development. A committed default token is convenient
+    # for a fresh clone and indefensible anywhere real: it is public, and in this
+    # server the token IS the identity, so it also grants the physician role.
+    # Refusing to start is the only behaviour that cannot be missed — a warning
+    # in a log is read after the fact, if at all.
+    if MCP_BEARER_TOKEN == DEV_BEARER_TOKEN and os.getenv("APP_ENV") not in (
+        None,
+        "",
+        "dev",
+        "development",
+        "test",
+    ):
+        raise SystemExit(
+            f"Refusing to start with the development bearer token while "
+            f"APP_ENV={os.getenv('APP_ENV')!r}. Set MCP_BEARER_TOKEN to a real "
+            "secret, or unset APP_ENV for local development."
+        )
     mcp.run(transport="http", host=HOST, port=PORT)
 
 
