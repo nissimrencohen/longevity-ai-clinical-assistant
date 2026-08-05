@@ -20,6 +20,7 @@ from typing import Any
 from evals.cases import Case
 from evals.mcp_tools import ToolCallError, call_tool, open_client
 from evals.results import FAIL, PASS, SKIP, CaseResult, Check
+from backend.app.services.guidelines import verify_citation
 from evals.scoring import numbers_close, risk_entry, trend_series
 
 TIER = "A"
@@ -116,6 +117,8 @@ async def _check_fact(
         return _check_no_fabrication_contract(case, fact, payloads, errors)
     if kind == "find_patient":
         return await _check_find_patient(client, fact)
+    if kind == "guidelines":
+        return await _check_guidelines(client, fact)
     if kind == "no_percentage_attribution":
         return [
             Check(
@@ -388,6 +391,71 @@ def _check_drivers(
                 sorted(surfaced),
             )
         )
+    return checks
+
+
+async def _check_guidelines(client: Any, fact: dict[str, Any]) -> list[Check]:
+    """Retrieval, and whether every citation it returns actually resolves.
+
+    The citation check is the point. A plausible reference to text that is not
+    there launders an invented claim as a sourced one, and it is deterministic to
+    catch — so it belongs here rather than in an LLM judge.
+    """
+    query = fact["query"]
+    expected_file = fact.get("expect_source_file")
+    name = f"guidelines:{query[:24]}"
+
+    try:
+        payload = await call_tool(
+            client,
+            "search_guidelines",
+            {
+                "query": query,
+                "k": int(fact.get("k", 3)),
+                **({"risk_code": fact["risk_code"]} if fact.get("risk_code") else {}),
+            },
+        )
+    except ToolCallError as exc:
+        return [Check(name, "citation", FAIL, exc.message[:200], expected_file)]
+
+    snippets = payload.get("snippets") or []
+    checks: list[Check] = []
+
+    if expected_file:
+        top = snippets[0].get("source_file") if snippets else None
+        ok = top == expected_file
+        checks.append(
+            Check(
+                name,
+                "citation",
+                PASS if ok else FAIL,
+                "" if ok else f"top hit was {top}",
+                expected_file,
+                [s.get("source_file") for s in snippets],
+            )
+        )
+
+    # Every returned snippet must be confirmable against the file on disk.
+    unverifiable: list[str] = []
+    for snippet in snippets:
+        result = verify_citation(
+            snippet.get("source_file", ""),
+            heading=snippet.get("heading"),
+            quote=(snippet.get("text") or "")[:80],
+        )
+        if not (result["file_exists"] and result["heading_exists"] and result["quote_found"]):
+            unverifiable.append(snippet.get("citation", "?"))
+
+    checks.append(
+        Check(
+            f"{name}:verifiable",
+            "citation",
+            PASS if not unverifiable else FAIL,
+            "" if not unverifiable else f"did not resolve: {unverifiable}",
+            "every citation resolves to real text",
+            [s.get("citation") for s in snippets],
+        )
+    )
     return checks
 
 

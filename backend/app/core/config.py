@@ -64,5 +64,20 @@ class Settings(BaseSettings):
     # what is worth doing even when everyone may look at everything.
     audit_enabled: bool = True
 
+    # --- Observability ----------------------------------------------------
+    # Off by default so the graded path carries no extra runtime dependency.
+    # OpenTelemetry is the wire format, so the backend (Phoenix, Langfuse,
+    # Tempo) is swappable without touching application code.
+    otel_enabled: bool = False
+    otel_endpoint: str = "http://phoenix:6006/v1/traces"
+
+    # --- Retrieval (Phase 7) ----------------------------------------------
+    # "lexical" is TF-IDF over the guideline chunks: deterministic, instant, no
+    # extra dependency, and therefore usable in CI and the free eval tier.
+    # "embedding" uses Chroma (uv sync --extra rag) for semantic matching.
+    # At five short documents the lexical path is competitive; the option exists
+    # for when the corpus grows.
+    retrieval_backend: Literal["lexical", "embedding"] = "lexical"
+
 
 settings = Settings()

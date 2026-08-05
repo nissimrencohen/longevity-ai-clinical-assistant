@@ -20,6 +20,7 @@ from .core.config import settings
 from .db.store import build_store
 from .services.cache import build_cache
 from .services.mlflow_client import MLflowRiskClient
+from .core.telemetry import setup_telemetry
 from .services.risk import RiskService
 
 
@@ -53,6 +54,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
     app.include_router(v1_router)
+
+    # No-op unless OTEL_ENABLED=true. Spans are scrubbed on the way out — see
+    # core/telemetry.py for why that is not optional.
+    setup_telemetry(app)
 
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:

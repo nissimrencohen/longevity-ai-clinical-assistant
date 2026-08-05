@@ -56,6 +56,26 @@ class FindPatientResponse(BaseModel):
     matches: list[PatientMatchResult] = Field(default_factory=list)
 
 
+class GuidelineSnippet(BaseModel):
+    """A citable passage. Every field here is checkable against the file on disk."""
+
+    source_file: str = Field(examples=["ckd_framingham.md"])
+    heading: str = Field(examples=["Risk factors used"])
+    citation: str = Field(
+        description="Cite exactly this string",
+        examples=["ckd_framingham.md § Risk factors used"],
+    )
+    lines: list[int] = Field(description="[start, end], 1-indexed inclusive")
+    risk_code: str | None = None
+    text: str
+    score: float
+
+
+class SearchGuidelinesResponse(BaseModel):
+    query: str
+    snippets: list[GuidelineSnippet] = Field(default_factory=list)
+
+
 class RiskDriver(BaseModel):
     """One feature's contribution to a risk, from the model's SHAP decomposition.
 

@@ -19,7 +19,11 @@ meaningful:
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+
+from ...core.config import settings
 
 from ...core.errors import (
     AccessDeniedError,
@@ -31,13 +35,22 @@ from ...core.security import Actor
 from ...schemas import (
     BiomarkersResponse,
     FindPatientResponse,
+    GuidelineSnippet,
     PatientMatchResult,
     RisksResponse,
+    SearchGuidelinesResponse,
 )
+from ...services.guidelines import build_retriever
 from ...services.risk import RiskService
 from ..deps import get_actor, get_risk_service
 
 router = APIRouter(prefix="/api/v1", tags=["clinical"])
+
+
+@lru_cache(maxsize=1)
+def get_retriever():
+    """Built once: the corpus is static and indexing it per request is waste."""
+    return build_retriever(settings.retrieval_backend)
 
 
 @router.get("/find_patient", response_model=FindPatientResponse)
@@ -63,6 +76,32 @@ async def find_patient(
         matches=[
             PatientMatchResult(patient_id=m.patient_id, name=m.full_name)
             for m in matches
+        ],
+    )
+
+
+@router.get("/search_guidelines", response_model=SearchGuidelinesResponse)
+async def search_guidelines(
+    query: str = Query(..., min_length=2, description="What to look up"),
+    k: int = Query(3, ge=1, le=10, description="How many snippets to return"),
+    risk_code: str | None = Query(
+        None, description="Restrict to one risk: CVD, T2DM, CKD, CLD, DEMENTIA"
+    ),
+) -> SearchGuidelinesResponse:
+    """Search the guideline corpus for text to ground an explanation in.
+
+    No patient data is involved, so this needs no actor scoping — the corpus is
+    the same educational material for everyone. Each snippet carries the source
+    file, heading and line span it came from, so the citation can be checked
+    against the file rather than taken on trust.
+    """
+    retriever = get_retriever()
+    hits = retriever.search(query, k=k, risk_code=risk_code)
+    return SearchGuidelinesResponse(
+        query=query,
+        snippets=[
+            GuidelineSnippet(**chunk.to_dict(), score=round(score, 4))
+            for chunk, score in hits
         ],
     )
 

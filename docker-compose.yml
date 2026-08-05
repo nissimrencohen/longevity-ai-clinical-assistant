@@ -36,6 +36,9 @@ x-service-defaults: &defaults
     MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-dev-longevity-token-change-me}
     POSTGRES_DSN: postgresql+asyncpg://${POSTGRES_USER:-clinic}:${POSTGRES_PASSWORD:-clinic}@postgres:5432/${POSTGRES_DB:-clinic}
     REDIS_URL: redis://redis:6379/0
+    # Tracing follows the observability profile; off unless asked for.
+    OTEL_ENABLED: ${OTEL_ENABLED:-false}
+    OTEL_ENDPOINT: ${OTEL_ENDPOINT:-http://phoenix:6006/v1/traces}
 
 services:
   # The clinical database. Postgres rather than SQLite for two concrete reasons,
@@ -217,9 +220,34 @@ services:
       retries: 6
       start_period: 10s
 
+  # Trace backend. Opt-in:  docker compose --profile observability up -d
+  #
+  # A single container, OTel-native, so a reviewer gets a working trace view with
+  # no extra setup. Self-hosted Langfuse would be the better production answer
+  # (prompt versioning, datasets, cost dashboards) but needs Postgres +
+  # ClickHouse + object storage — four more containers on a stack that already
+  # runs seven. OpenTelemetry is the wire format either way, so swapping backends
+  # touches this file and nothing else.
+  #
+  # Spans are scrubbed before they leave the app (backend/app/core/telemetry.py):
+  # allowlisted attributes only, no query strings, pseudonymised patient ids.
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: longevity-phoenix
+    profiles: ["observability"]
+    restart: always
+    networks: [longevity]
+    ports:
+      - "${PHOENIX_PUBLISH_PORT:-6006}:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /data
+    volumes:
+      - phoenix-data:/data
+
 networks:
   longevity:
     name: longevity-net
 
 volumes:
   postgres-data:
+  phoenix-data:

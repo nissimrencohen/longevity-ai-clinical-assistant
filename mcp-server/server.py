@@ -298,6 +298,52 @@ async def get_current_risks(patient_id: PatientId) -> dict:
     )
 
 
+@mcp.tool
+async def search_guidelines(
+    query: Annotated[
+        str,
+        Field(
+            description="What to look up, e.g. 'what drives dementia risk'",
+            examples=["modifiable dementia risk factors", "why does eGFR matter"],
+            min_length=2,
+        ),
+    ],
+    k: Annotated[int, Field(description="How many snippets", ge=1, le=10)] = 3,
+    risk_code: Annotated[
+        str | None,
+        Field(
+            description="Restrict to one risk: CVD, T2DM, CKD, CLD or DEMENTIA",
+            examples=["DEMENTIA"],
+        ),
+    ] = None,
+) -> dict:
+    """Search the clinical guideline notes for text to ground an explanation in.
+
+    Use this when the doctor asks WHY a risk is what it is, what a score measures,
+    or what the guidance says — after you have the patient's numbers, to explain
+    them. It contains no patient data; it is background material about the five
+    scoring instruments.
+
+    Pass `risk_code` when the question is about one risk, so a dementia question
+    does not retrieve the liver page.
+
+    Each snippet carries `citation` (e.g. "ckd_framingham.md § Risk factors used"),
+    the `lines` it occupies, and its `text`.
+
+    CITE `citation` EXACTLY AS GIVEN, and only claim what the snippet actually
+    says. Do not paraphrase beyond it and do not attribute a statement to a
+    document that does not contain it — citations are checked against the source
+    files, and a plausible citation to text that is not there is worse than none.
+
+    These are simplified educational summaries written for this exercise, not
+    authoritative clinical guidelines; say so when it matters.
+    """
+    params: dict[str, Any] = {"query": query.strip(), "k": k}
+    if risk_code:
+        params["risk_code"] = risk_code.strip().upper()
+    return await _call_backend("/api/v1/search_guidelines", params)
+
+
 def main() -> None:
     mcp.run(transport="http", host=HOST, port=PORT)
 
