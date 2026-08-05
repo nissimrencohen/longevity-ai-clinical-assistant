@@ -243,3 +243,51 @@ def test_refusal_phrasings_recognised(answer: str) -> None:
 def test_an_answer_that_just_reports_values_is_not_a_refusal() -> None:
     answer = "Maya Cohen's HbA1c is 5.1%."
     assert not any(phrase in answer.lower() for phrase in NOT_FOUND_PHRASES)
+
+
+# --- percentage attribution of SHAP contributions ----------------------------
+#
+# Contributions are additive in log-odds, never in probability. This scorer has
+# to catch the invalid conversion WITHOUT flagging a legitimate probability
+# quoted as a percentage, which is the harder half.
+
+
+def _flags(answer: str) -> bool:
+    from evals.tier_b import _check_no_percentage_attribution
+
+    return _check_no_percentage_attribution(answer).status == "fail"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Her eGFR contributes 34% of her kidney risk.",
+        "Elevated BMI adds 12% to her risk.",
+        "Age accounts for 40 percent of the total risk.",
+        "Smoking is responsible for 25% of his cardiovascular risk.",
+        "Proteinuria drives 18 percentage points of the risk.",
+    ],
+)
+def test_percentage_attribution_is_caught(answer: str) -> None:
+    """The invalid conversion, in the phrasings a model actually reaches for."""
+    assert _flags(answer), answer
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Her 10-year CKD risk is 50% (high band).",
+        "CVD risk is 0.44, or 44%, over 10 years.",
+        "The main drivers are her eGFR of 52 (reference 100), age, and proteinuria.",
+        "His eGFR contributes +1.04 in log-odds, the largest single factor.",
+        "Risk rose from 39% to 45% between July 2025 and January 2026.",
+        "Her HbA1c is 5.1% and her risk band is high.",
+    ],
+)
+def test_legitimate_percentages_are_not_flagged(answer: str) -> None:
+    """A probability stated as a percentage is correct and must not trip this.
+
+    A scorer that fails "her risk is 50%" would be unusable — the assistant is
+    supposed to say that.
+    """
+    assert not _flags(answer), answer

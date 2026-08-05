@@ -40,6 +40,35 @@ class BiomarkersResponse(BaseModel):
     biomarkers: BiomarkerSnapshot
 
 
+class RiskDriver(BaseModel):
+    """One feature's contribution to a risk, from the model's SHAP decomposition.
+
+    IMPORTANT: ``contribution_log_odds`` is additive in LOG-ODDS, not in
+    probability. It must never be restated as "this feature adds N% of risk" —
+    that conversion is invalid and would be a confident, wrong statement in a
+    clinical conversation.
+    """
+
+    feature: str = Field(examples=["egfr", "age_years"])
+    label: str = Field(description="Human-readable feature name", examples=["eGFR"])
+    patient_value: float | None = None
+    reference_value: float | None = Field(
+        default=None,
+        description="The healthy-reference value this was compared against",
+    )
+    direction: str = Field(examples=["increases_risk", "decreases_risk"])
+    contribution_log_odds: float = Field(
+        description="SHAP value in log-odds. Additive in log-odds ONLY."
+    )
+    share_of_deviation: float | None = Field(
+        default=None,
+        description=(
+            "Fraction of this patient's TOTAL log-odds movement away from the "
+            "reference that this feature accounts for. Not a share of risk."
+        ),
+    )
+
+
 class RiskResult(BaseModel):
     """A single freshly-computed risk."""
 
@@ -70,6 +99,15 @@ class RiskResult(BaseModel):
     # computation time, not the time of this request — presenting an old value as
     # freshly computed is a provenance problem, not a performance one.
     source: str = Field(default="fresh", examples=["fresh", "cache"])
+
+    # The features that moved this prediction most, largest first.
+    drivers: list[RiskDriver] = Field(default_factory=list)
+
+    # Baseline the drivers are measured against, so an explanation can always be
+    # traced to the reference population it used.
+    explanation_reference: str | None = Field(
+        default=None, examples=["healthy-anchor-v1"]
+    )
 
 
 class RiskTrendPoint(BaseModel):

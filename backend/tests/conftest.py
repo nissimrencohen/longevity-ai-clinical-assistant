@@ -19,6 +19,8 @@ and trustworthy:
 
 from __future__ import annotations
 
+import glob
+import importlib.util
 import json
 import pickle
 import shutil
@@ -26,6 +28,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import httpx
+import numpy as np
 import pandas as pd
 import pytest
 import pytest_asyncio
@@ -66,10 +69,38 @@ def temp_db(tmp_path, monkeypatch) -> Path:
     return target
 
 
+@lru_cache(maxsize=1)
+def reference_vectors() -> dict[str, dict[str, float]]:
+    """The same reference population the registered router serves.
+
+    Read from the model artefact when it exists, falling back to the generator
+    spec it was built from, so the mock cannot drift from the real thing.
+    """
+    matches = glob.glob(
+        str(MODELS_DIR / "mlflow_risk_router" / "**" / "reference_vectors.json"),
+        recursive=True,
+    )
+    if matches:
+        return json.loads(Path(matches[0]).read_text(encoding="utf-8"))["vectors"]
+
+    spec = importlib.util.spec_from_file_location(
+        "generate_models", MODELS_DIR / "generate_models.py"
+    )
+    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return {entry["metadata"]["model_name"]: entry["healthy"] for entry in module.MODELS}
+
+
 def _router_handler(request: httpx.Request) -> httpx.Response:
-    """Stand-in for the MLflow RiskRouter — same contract, same maths."""
+    """Stand-in for the MLflow RiskRouter — same contract, same maths.
+
+    Implements `explain` too. A mock that silently ignored it would let the
+    explanation path go untested here while working in production (or worse, the
+    reverse); test_mlflow_integration.py asserts the mocked and live paths agree.
+    """
     body = json.loads(request.content)
-    model_name = body["params"]["model"]
+    params = body.get("params", {})
+    model_name = params["model"]
     split = body["dataframe_split"]
 
     model = load_model(model_name)
@@ -78,8 +109,35 @@ def _router_handler(request: httpx.Request) -> httpx.Response:
     if missing:
         return httpx.Response(400, json={"error": f"missing features: {missing}"})
 
-    X = frame[list(model.feature_names_in_)].astype("float64")
-    return httpx.Response(200, json={"predictions": model.predict_proba(X)[:, 1].tolist()})
+    features = list(model.feature_names_in_)
+    X = frame[features].astype("float64")
+    probabilities = model.predict_proba(X)[:, 1]
+
+    if not params.get("explain"):
+        return httpx.Response(200, json={"predictions": probabilities.tolist()})
+
+    coef = np.asarray(model.coef_[0], dtype="float64")
+    intercept = float(model.intercept_[0])
+    reference = reference_vectors()[model_name]
+    ref_vec = np.array([float(reference[f]) for f in features], dtype="float64")
+    base_value = intercept + float(coef @ ref_vec)
+
+    predictions = []
+    for position, (_, row) in enumerate(X.iterrows()):
+        x = row.to_numpy(dtype="float64")
+        phi = coef * (x - ref_vec)
+        predictions.append(
+            {
+                "probability": float(probabilities[position]),
+                "base_value": base_value,
+                "reference_id": "healthy-anchor-v1",
+                "model_name": model_name,
+                "contributions": {f: float(v) for f, v in zip(features, phi)},
+                "reference_values": {f: float(v) for f, v in zip(features, ref_vec)},
+                "feature_values": {f: float(v) for f, v in zip(features, x)},
+            }
+        )
+    return httpx.Response(200, json={"predictions": predictions})
 
 
 @pytest.fixture

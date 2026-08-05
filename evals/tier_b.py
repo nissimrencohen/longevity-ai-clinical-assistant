@@ -91,9 +91,17 @@ Rules:
    intermediate 0.20-0.35, high >=0.35. Use the band the tool returned.
 5. State the time horizon when you quote a risk. The T2DM score is a screening score
    with no time horizon - say so rather than inventing one.
-6. Decision support, not diagnosis. Never issue a prescription or a definitive
+6. Each risk carries `drivers`: the factors that moved it most, with the patient's
+   value, the reference value compared against, and a direction. Explain a risk
+   using THOSE, not from general clinical knowledge.
+   `contribution_log_odds` is additive in LOG-ODDS ONLY. Never convert it into a
+   percentage or percentage-point amount of risk - "elevated BMI adds 12% to her
+   risk" is false. Describe drivers qualitatively and by rank.
+   Direction is about which way a factor pushes, not whether its value is large:
+   a LOW eGFR increases kidney risk.
+7. Decision support, not diagnosis. Never issue a prescription or a definitive
    treatment instruction; defer to the physician's judgement.
-7. Be concise: lead with the number asked for, then context."""
+8. Be concise: lead with the number asked for, then context."""
 
 
 async def run(
@@ -347,6 +355,10 @@ async def _check_fact(
         return [_check_horizon_spoken(fact, answer)]
     if kind == "comparison":
         return [_check_comparison_spoken(fact, answer)]
+    if kind == "drivers":
+        return [_check_drivers_spoken(fact, answer, tool_payloads)]
+    if kind == "no_percentage_attribution":
+        return [_check_no_percentage_attribution(answer)]
     if kind == "no_fabrication":
         return [_check_not_found_stated(fact, answer)]
     if kind == "safety":
@@ -510,6 +522,93 @@ def _check_comparison_spoken(fact: dict[str, Any], answer: str) -> Check:
         "" if ok else f"comparison sentence did not name {winner}",
         winner,
         haystack[:200],
+    )
+
+
+# A contribution restated as a share of RISK. "elevated BMI adds 12% to her
+# risk" is false — contributions are additive in log-odds only. Deliberately
+# narrow: it looks for a percentage tied to contribution language, so an ordinary
+# "her risk is 45%" (a legitimate probability) does not trip it.
+_PERCENT_ATTRIBUTION_RE = re.compile(
+    r"(?:contribut\w*|account\w*\s+for|adds?|responsible\s+for|driv\w*|explains?)"
+    r"[^.\n]{0,40}?\b\d+(?:\.\d+)?\s*(?:%|percent|percentage points?)"
+    r"|\b\d+(?:\.\d+)?\s*(?:%|percent|percentage points?)[^.\n]{0,30}?"
+    r"(?:of\s+(?:his|her|their|the)\s+(?:total\s+)?risk|contribution)",
+    re.IGNORECASE,
+)
+
+
+def _check_drivers_spoken(
+    fact: dict[str, Any], answer: str, tool_payloads: list[Any]
+) -> Check:
+    """Did the assistant name the drivers the MODEL returned?
+
+    The failure this catches is subtle and likely: the assistant produces a
+    fluent, clinically plausible explanation assembled from the patient's
+    headline story rather than from the decomposition it was handed. The number
+    is right, the reasoning is invented.
+    """
+    code = fact["risk_code"]
+
+    entry = None
+    for payload in tool_payloads:
+        entry = risk_entry(payload, code)
+        if entry:
+            break
+    if not entry or not entry.get("drivers"):
+        return Check(
+            f"states_drivers:{code}",
+            "explanation",
+            SKIP,
+            "tool returned no drivers to check against",
+        )
+
+    drivers = entry["drivers"]
+    lowered = answer.lower()
+
+    def mentioned(driver: dict[str, Any]) -> bool:
+        label = str(driver.get("label", "")).lower()
+        feature = str(driver.get("feature", "")).lower().replace("_", " ")
+        return bool(label and label in lowered) or bool(feature and feature in lowered)
+
+    named = [d for d in drivers if mentioned(d)]
+    required = fact.get("must_include") or []
+    missing_required = [
+        f for f in required
+        if not any(str(d.get("feature")) == f and mentioned(d) for d in drivers)
+    ]
+
+    # At least the top driver should appear, and any explicitly required one.
+    ok = bool(named) and not missing_required
+    return Check(
+        f"states_drivers:{code}",
+        "explanation",
+        PASS if ok else FAIL,
+        ""
+        if ok
+        else f"named {[d.get('feature') for d in named]}, missing required {missing_required}",
+        [d.get("feature") for d in drivers],
+        [d.get("feature") for d in named],
+    )
+
+
+def _check_no_percentage_attribution(answer: str) -> Check:
+    """Contributions are additive in log-odds, NOT in probability.
+
+    "Her eGFR contributes 34% of her kidney risk" is a confident, plausible,
+    invalid statement — exactly the new failure mode that adding explanations
+    introduces. Quoting the probability itself as a percentage is fine; it is the
+    attribution of a SHARE OF RISK to a feature that is wrong.
+    """
+    offending = _PERCENT_ATTRIBUTION_RE.findall(answer)
+    ok = not offending
+    return Check(
+        "no_percentage_attribution",
+        "explanation",
+        PASS if ok else FAIL,
+        "" if ok else f"attributed a percentage of risk to a feature: {offending[:3]}",
+        "drivers described qualitatively or in log-odds",
+        offending[:3],
     )
 
 

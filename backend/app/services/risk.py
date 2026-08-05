@@ -23,17 +23,21 @@ import json
 from datetime import date, datetime, timezone
 from typing import Any
 
+from dataclasses import dataclass, field
+
 from ..core.errors import IncompletePatientDataError, PatientNotFoundError
 from ..db.store import ClinicalStore, RiskRow, SqliteStore, direction
 from ..schemas import (
     BiomarkerSnapshot,
     BiomarkersResponse,
+    RiskDriver,
     RiskResult,
     RisksResponse,
     RiskTrendPoint,
 )
 from .banding import band
 from .cache import NullCache, RiskCache, cache_key
+from .explain import build_drivers
 from .features import (
     CLINIC_TODAY,
     MODEL_SPECS,
@@ -65,6 +69,19 @@ def _inputs_hash(spec: ModelSpec, payload: dict[str, float]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class _Scored:
+    """One model's result on the way through the service."""
+
+    probability: float
+    source: str
+    computed_at: str | None
+    drivers: list[RiskDriver] = field(default_factory=list)
+    reference_id: str | None = None
+    # None when the value came FROM the cache — there is nothing to write back.
+    cache_payload: dict | None = None
+
+
 class RiskService:
     """Orchestrates store + feature building + model calls + cache."""
 
@@ -75,11 +92,17 @@ class RiskService:
         store: ClinicalStore | None = None,
         cache: RiskCache | None = None,
         clinic_today: date = CLINIC_TODAY,
+        explain: bool = True,
     ) -> None:
         self._models = mlflow_client
         self._store = store or SqliteStore()
         self._cache = cache or NullCache()
         self._today = clinic_today
+        # Explanations are exact and closed-form for these linear models, so they
+        # cost a vector subtraction and ride along in the same round trip. On by
+        # default; the flag exists so a caller that genuinely does not want them
+        # (or an older router) can turn them off.
+        self._explain = explain
 
     # -- reads ------------------------------------------------------------
 
@@ -109,19 +132,51 @@ class RiskService:
 
     async def _score(
         self, spec: ModelSpec, payload: dict[str, float], digest: str
-    ) -> tuple[float, str, str | None]:
-        """Return ``(probability, source, computed_at_override)``.
+    ) -> _Scored:
+        """Score one model, via the cache when possible.
 
-        A cache hit carries the ORIGINAL computation time, so the response never
-        presents an hour-old number as if it were computed just now.
+        A cache hit carries the ORIGINAL computation time AND its explanation.
+        Caching the probability but not the drivers would mean a cached answer
+        silently loses its explanation — the sort of asymmetry that turns a
+        performance feature into a correctness one.
         """
         key = cache_key(spec.model_name, digest)
         cached = await self._cache.get(key)
         if cached and "probability" in cached:
-            return float(cached["probability"]), "cache", cached.get("computed_at")
+            return _Scored(
+                probability=float(cached["probability"]),
+                source="cache",
+                computed_at=cached.get("computed_at"),
+                drivers=build_drivers(
+                    cached.get("contributions", {}),
+                    cached.get("feature_values", {}),
+                    cached.get("reference_values", {}),
+                ),
+                reference_id=cached.get("reference_id"),
+                cache_payload=None,
+            )
 
-        probability = await self._models.predict_proba(spec.model_name, payload)
-        return probability, "fresh", None
+        prediction = await self._models.predict(
+            spec.model_name, payload, explain=self._explain
+        )
+        return _Scored(
+            probability=prediction.probability,
+            source="fresh",
+            computed_at=None,
+            drivers=build_drivers(
+                prediction.contributions,
+                prediction.feature_values,
+                prediction.reference_values,
+            ),
+            reference_id=prediction.reference_id,
+            cache_payload={
+                "probability": prediction.probability,
+                "contributions": prediction.contributions,
+                "feature_values": prediction.feature_values,
+                "reference_values": prediction.reference_values,
+                "reference_id": prediction.reference_id,
+            },
+        )
 
     async def get_current_risks(self, patient_id: str) -> RisksResponse:
         """Compute all five risks live, append them, and return them with trends."""
@@ -150,7 +205,7 @@ class RiskService:
 
         previous = await self._store.fetch_last_inputs_hashes(patient_id)
         pending: list[RiskRow] = []
-        for spec, (probability, source, _) in zip(MODEL_SPECS, scored, strict=True):
+        for spec, result in zip(MODEL_SPECS, scored, strict=True):
             digest = hashes[spec.risk_code]
             if previous.get(spec.risk_code) == digest:
                 continue  # inputs unchanged since the last stored row
@@ -158,8 +213,8 @@ class RiskService:
                 RiskRow(
                     patient_id=patient_id,
                     risk_code=spec.risk_code,
-                    probability=probability,
-                    risk_band=band(probability),
+                    probability=result.probability,
+                    risk_band=band(result.probability),
                     model_name=spec.model_name,
                     model_version=spec.model_version,
                     time_horizon_years=spec.time_horizon_years,
@@ -173,6 +228,11 @@ class RiskService:
                             "clinic_today": self._today.isoformat(),
                             "features": payloads[spec.risk_code],
                             "defaults_applied": defaults_applied(spec, derived),
+                            # Store the decomposition alongside the number it
+                            # explains, so an audit can reconstruct not just what
+                            # was predicted but why.
+                            "drivers": [d.model_dump() for d in result.drivers],
+                            "explanation_reference": result.reference_id,
                         },
                         sort_keys=True,
                     ),
@@ -184,11 +244,11 @@ class RiskService:
 
         # Populate the cache only after a successful computation, and store the
         # timestamp alongside so a later hit can report when it really ran.
-        for spec, (probability, source, _) in zip(MODEL_SPECS, scored, strict=True):
-            if source == "fresh":
+        for spec, result in zip(MODEL_SPECS, scored, strict=True):
+            if result.cache_payload is not None:
                 await self._cache.set(
                     cache_key(spec.model_name, hashes[spec.risk_code]),
-                    {"probability": probability, "computed_at": now},
+                    {**result.cache_payload, "computed_at": now},
                 )
 
         trends = await self._store.fetch_trends(patient_id)
@@ -196,20 +256,20 @@ class RiskService:
         risks = [
             RiskResult(
                 risk_code=spec.risk_code,
-                probability=probability,
-                risk_band=band(probability),
+                probability=result.probability,
+                risk_band=band(result.probability),
                 model_name=spec.model_name,
                 model_version=spec.model_version,
                 time_horizon_years=spec.time_horizon_years,
-                computed_at=computed_at or now,
+                computed_at=result.computed_at or now,
                 inputs_hash=hashes[spec.risk_code],
                 persisted=spec.risk_code in persisted,
-                source=source,
+                source=result.source,
+                drivers=result.drivers,
+                explanation_reference=result.reference_id,
                 trend_direction=direction(trends.get(spec.risk_code, [])),
             )
-            for spec, (probability, source, computed_at) in zip(
-                MODEL_SPECS, scored, strict=True
-            )
+            for spec, result in zip(MODEL_SPECS, scored, strict=True)
         ]
 
         return RisksResponse(

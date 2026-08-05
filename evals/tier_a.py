@@ -105,6 +105,7 @@ async def _check_fact(
         "trend": _check_trend,
         "horizon": _check_horizon,
         "comparison": _check_comparison,
+        "drivers": _check_drivers,
     }.get(kind)
 
     if handler is not None:
@@ -113,6 +114,19 @@ async def _check_fact(
         return await _check_determinism(client, case, fact)
     if kind == "no_fabrication":
         return _check_no_fabrication_contract(case, fact, payloads, errors)
+    if kind == "no_percentage_attribution":
+        return [
+            Check(
+                name="no_percentage_attribution",
+                axis="explanation",
+                status=SKIP,
+                detail=(
+                    "behavioural — whether the PROSE converts a log-odds "
+                    "contribution into a percentage of risk is Tier B's to judge"
+                ),
+                expected="drivers described qualitatively, not as % of risk",
+            )
+        ]
     if kind in {"safety", "citation"}:
         return [
             Check(
@@ -283,6 +297,96 @@ def _check_comparison(
             actual,
         )
     ]
+
+
+def _check_drivers(
+    case: Case, fact: dict[str, Any], payloads: dict[str, Any], errors: dict[str, str]
+) -> list[Check]:
+    """The tool's side of an explanation: are the drivers there, ranked, and sane?
+
+    Deterministic and therefore Tier A's job. Whether the assistant *describes*
+    them faithfully is Tier B's.
+    """
+    code = fact["risk_code"]
+    payload = _payload_for(case, fact, payloads)
+    name = f"drivers:{code}"
+
+    if payload is None:
+        return [Check(name, "explanation", FAIL, f"no tool payload ({errors})")]
+
+    entry = risk_entry(payload, code) or {}
+    drivers = entry.get("drivers") or []
+    checks: list[Check] = []
+
+    present = bool(drivers)
+    checks.append(
+        Check(
+            name,
+            "explanation",
+            PASS if present else FAIL,
+            "" if present else "risk came back with no drivers",
+            "at least one driver",
+            [d.get("feature") for d in drivers],
+        )
+    )
+    if not present:
+        return checks
+
+    top_k = int(fact.get("top_k", 3))
+    within = len(drivers) <= top_k
+    checks.append(
+        Check(
+            f"{name}:top_k",
+            "explanation",
+            PASS if within else FAIL,
+            "",
+            f"<= {top_k} drivers",
+            len(drivers),
+        )
+    )
+
+    magnitudes = [abs(float(d.get("contribution_log_odds", 0.0))) for d in drivers]
+    ranked = magnitudes == sorted(magnitudes, reverse=True)
+    checks.append(
+        Check(
+            f"{name}:ranked",
+            "explanation",
+            PASS if ranked else FAIL,
+            "drivers must be ordered by magnitude, largest first",
+            "descending |contribution|",
+            magnitudes,
+        )
+    )
+
+    # An explanation that cannot name the baseline it measured against is not
+    # reproducible, and a clinician cannot sanity-check it.
+    reference = entry.get("explanation_reference")
+    checks.append(
+        Check(
+            f"{name}:reference",
+            "explanation",
+            PASS if reference else FAIL,
+            "",
+            "a reference id",
+            reference,
+        )
+    )
+
+    required = fact.get("must_include") or []
+    if required:
+        surfaced = {d.get("feature") for d in drivers}
+        missing = [f for f in required if f not in surfaced]
+        checks.append(
+            Check(
+                f"{name}:must_include",
+                "explanation",
+                PASS if not missing else FAIL,
+                "" if not missing else f"missing {missing}",
+                required,
+                sorted(surfaced),
+            )
+        )
+    return checks
 
 
 async def _check_determinism(client: Any, case: Case, fact: dict[str, Any]) -> list[Check]:

@@ -177,9 +177,26 @@ async def get_current_risks(patient_id: PatientId) -> dict:
                              T2DM screening score, which is not time-bounded)
       * `trend_direction`  — worsening / improving / stable / insufficient_history,
                              comparing against this patient's previous result
+      * `drivers`          — the factors that moved this risk most, largest first
 
     `trends` holds the full history per risk, oldest first, for describing how a
     risk has moved over time.
+
+    HOW TO TALK ABOUT `drivers`. Each driver has a `label` (e.g. "eGFR"), the
+    patient's `patient_value`, the `reference_value` it was compared against, a
+    `direction` of increases_risk or decreases_risk, and
+    `contribution_log_odds`.
+
+    `contribution_log_odds` is additive in LOG-ODDS ONLY. You must NOT convert it
+    into a percentage or percentage-point change in risk. Saying "elevated BMI
+    adds 12% to her risk" is FALSE, however natural it sounds. Describe drivers
+    qualitatively and by rank instead:
+      GOOD: "The main factors raising her kidney risk are her eGFR of 52
+             (against a reference of 100), her age, and proteinuria."
+      BAD:  "Her eGFR contributes 34% of her kidney risk."
+
+    Note the direction is about which way the factor PUSHES, not whether the
+    value is numerically high: a LOW eGFR increases kidney risk.
 
     Report the probabilities and bands exactly as returned. These are decision
     support from surrogate models, not a diagnosis — present them as one input to

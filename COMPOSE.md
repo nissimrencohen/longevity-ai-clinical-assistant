@@ -90,6 +90,42 @@ describes. The compose file sets `DB_BACKEND=postgres` and `CACHE_BACKEND=redis`
 `/health` reports which pair is live, so a misconfigured deployment is visible
 from the healthcheck rather than from surprising results.
 
+### Explanations
+
+Every risk carries `drivers`: the factors that moved it most, each with the
+patient's value, the reference value compared against, a direction, and a SHAP
+contribution in log-odds.
+
+```
+CKD 0.5000 high   ref=healthy-anchor-v1
+   age            patient=72.0  ref=35.0   increases_risk  +1.336 log-odds  (34%)
+   eGFR           patient=52.0  ref=100.0  increases_risk  +1.040 log-odds  (27%)
+   proteinuria    patient= 1.0  ref= 0.0   increases_risk  +0.650 log-odds  (17%)
+```
+
+These are **exact** Shapley values, not approximations. For a linear model
+`phi_j = w_j * (x_j - x_ref_j)` in closed form — one vector subtraction, no
+sampling, no KernelExplainer. `backend/tests/test_explanations.py` proves this
+equals the true Shapley value by brute-force coalition enumeration, and proves
+`base + sum(contributions) == logit(probability)` for all five models across all
+eight patients. That exactness is why explaining every risk on every request is
+affordable, and why the explanation can never disagree with the number it
+explains: both come back in the same round trip.
+
+The reference population is each model's own calibration anchor — a healthy
+35-year-old — imported from `generate_models.py` and persisted **inside the
+model artefact** as `healthy-anchor-v1`. A data-derived background would make
+explanations depend on who else happened to be in the database; this way they are
+reproducible and auditable, and every stored risk row records which reference it
+used.
+
+> **Unit discipline.** Contributions are additive in **log-odds**, not in
+> probability. "Elevated BMI adds 12% to her risk" is false, however natural it
+> sounds — that is the new failure mode explanations introduce. The tool
+> docstring and the agent instructions both forbid it, and an eval scorer
+> (`no_percentage_attribution`) fails any answer that does it anyway, while
+> deliberately not flagging a legitimate probability quoted as a percentage.
+
 **Migrations** are Alembic (`migrations/`), run by the one-shot `seed` service,
 which then loads the shipped SQLite fixture into Postgres. `data/generate_db.py`
 stays the canonical definition of the mock clinic and is untouched — regenerating
