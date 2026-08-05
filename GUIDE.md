@@ -1,5 +1,20 @@
 # GUIDE — build & run the Longevity clinical assistant
 
+> **This is the original brief, kept as provided.** For how the delivered system
+> actually runs, see **[`SOLUTION.md` §3](SOLUTION.md#3-how-to-run-it-and-the-feature-flags)**,
+> which is authoritative where the two disagree. Three deliberate divergences,
+> each explained there:
+>
+> | This guide says | Delivered | Why |
+> |---|---|---|
+> | MCP on `:9000` | **`:9100`** | 9000 was occupied by an unrelated container on the dev machine; the symptom was nasty — LibreChat talked to the wrong service and reported "Failed to initialize MCP server" |
+> | URL `…/mcp/` (trailing slash) | **`…/mcp`** (none) | inverted under FastMCP 3.x: `/mcp/` answers `307`, and LibreChat does not replay the `Authorization` header across the redirect — you get "connected, 0 tools" |
+> | Three services on the host | **All in Docker**, one private network | only the MCP and guard ports are published; Postgres, Redis, MLflow and the backend are unreachable from the host. Host mode still works via `scripts/run_stack.ps1` |
+>
+> The verification checklist at the bottom of this file still applies and still
+> passes.
+
+
 This is the manual. It covers setup, the port map, the run order, each component,
 and the handful of traps that eat the most time. Read it once end-to-end before
 starting.

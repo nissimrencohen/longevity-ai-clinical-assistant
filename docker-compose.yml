@@ -29,6 +29,14 @@ x-service-defaults: &defaults
   restart: always
   networks: [longevity]
   environment:
+    # CAREFUL: a YAML merge key does NOT deep-merge mappings. Any service that
+    # declares its own `environment:` REPLACES this block wholesale rather than
+    # adding to it, so every variable a service needs must appear in that
+    # service's own block. This bit us: OTEL_ENABLED lived only here, so tracing
+    # could never be switched on in Docker — Phoenix would start and no span
+    # would ever arrive. The values below apply only to services that add nothing
+    # of their own.
+    #
     # Service-name addressing. These override the repo .env, which points at
     # 127.0.0.1 for host mode.
     BACKEND_URL: http://backend:8001
@@ -140,6 +148,10 @@ services:
       # exercised and a fresh clone still runs with no services at all.
       DB_BACKEND: ${DB_BACKEND:-postgres}
       CACHE_BACKEND: ${CACHE_BACKEND:-redis}
+      # Repeated from x-service-defaults on purpose — see the note there.
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_ENDPOINT: ${OTEL_ENDPOINT:-http://phoenix:6006/v1/traces}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-longevity-backend}
     volumes:
       # Read-only: with Postgres as the live database the SQLite file is a seed
       # fixture, not a write target. Mounting it ro makes that explicit and stops
@@ -173,6 +185,10 @@ services:
       # Inside the network the natural port is fine; the host mapping below is
       # what avoids collisions with whatever else is running on this machine.
       MCP_PORT: "9000"
+      # Repeated from x-service-defaults on purpose — see the note there.
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_ENDPOINT: ${OTEL_ENDPOINT:-http://phoenix:6006/v1/traces}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-longevity-mcp}
     ports:
       - "${MCP_PUBLISH_PORT:-9100}:9000"
     depends_on:

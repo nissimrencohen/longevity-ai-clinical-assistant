@@ -1,13 +1,12 @@
 # SOLUTION
 
-A clinical chat assistant for a longevity clinic: LibreChat → MCP → FastAPI →
-MLflow + database, with five disease risks computed live from a patient's
-biomarkers, explained, and evaluated.
+A clinical chat assistant for a longevity clinic. A doctor asks about a patient in
+chat; the system resolves the name, pulls that patient's biomarkers, computes five
+disease risks live from ML models, explains what drives them, grounds the
+explanation in cited guidance — and refuses to prescribe.
 
 **Repository:** https://github.com/nissimrencohen/longevity-ai-clinical-assistant
 **LibreChat release pinned:** `v0.8.7` (config schema `1.3.13`)
-
-At a glance:
 
 | | |
 |---|---|
@@ -17,6 +16,113 @@ At a glance:
 | Manual UI suite | **35 queries**, all passing — [`MANUAL_TESTS.md`](MANUAL_TESTS.md) |
 | Lint | `ruff` clean |
 | Boot | `docker compose up -d --wait` → six healthy services (plus a one-shot seed) in ~25s |
+
+---
+
+## Read this in 5 minutes
+
+If you have time for three things:
+
+1. **Run it** — the two commands below. Nothing else is needed.
+2. **Run [`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 copy-paste queries with an
+   answer key verified against the database. It is the fastest way to see what the
+   system does *and* what it refuses to do.
+3. **Read [§4 Trade-offs](#4-trade-offs-and-what-is-left)** — the honest part.
+   What I got wrong, what the tests caught, and the one eval case I left failing
+   on purpose.
+
+```bash
+cp .env.example .env
+docker compose up -d --wait      # six services, ~25s, exits 0 only when all are serving
+uv run python evals/harness.py --tier a    # deterministic evals — no API key, no cost
+```
+
+That is the whole verification loop. The chat UI needs LibreChat and an OpenRouter
+key — [§3](#3-how-to-run-it-and-the-feature-flags) has the click-by-click setup.
+
+### The idea in one paragraph
+
+The assignment asks for a chat assistant over five risk models. The hard part is
+not the wiring, it is that **a fluent wrong answer is worse than no answer** in a
+clinical setting. So every addition here is about making the system unable to be
+confidently wrong: numbers must trace to a tool result *for that patient*,
+citations are re-read from disk, prescribing is blocked by a proxy rather than
+requested by a prompt, patient names are pseudonymised before they reach a
+third-party model, and the eval suite gates every commit for free.
+
+---
+
+## Contents
+
+- [Read this in 5 minutes](#read-this-in-5-minutes)
+- [Architecture](#architecture)
+- [1. Core requirements and bonuses](#1-core-requirements-and-bonuses)
+  - Async backend · concurrent model calls · error contract · MCP tools · evals · both bonus tracks
+- [2. Architectural additions, and why they matter clinically](#2-architectural-additions-and-why-they-matter-clinically)
+  - Postgres · Redis · the safety proxy · SHAP · two-way PHI scrubbing · RBAC · retrieval · tracing
+- [3. How to run it, and the feature flags](#3-how-to-run-it-and-the-feature-flags)
+  - Docker · LibreChat click-by-click · **[the manual test suite](MANUAL_TESTS.md)** · flags · tests
+- [4. Trade-offs and what is left](#4-trade-offs-and-what-is-left)
+  - The GET that writes · unit assumptions · what fails and why · where AI tooling was used
+
+---
+
+## Architecture
+
+Everything runs on one private Docker network. **Only two ports are published**:
+the MCP server, for LibreChat, and the guard proxy. Postgres, Redis, MLflow and
+the backend are not reachable from the host at all.
+
+```mermaid
+flowchart TB
+    doc["Doctor<br/><i>browser</i>"] --> lc["LibreChat v0.8.7<br/>:3080"]
+
+    lc -->|"OpenAI-compatible<br/>baseURL"| guard
+    lc -->|"MCP · streamable HTTP<br/>bearer auth · :9100"| mcp
+
+    subgraph boundary["trust boundary — real patient names never cross"]
+        guard["<b>Guard proxy</b> :9200<br/>scrub names outbound<br/>restore inbound<br/>block prescribing"]
+    end
+
+    guard <-->|"pseudonymised"| or(["OpenRouter<br/><i>external</i>"])
+
+    subgraph net["longevity-net · private bridge"]
+        mcp["<b>MCP server</b><br/>find_patient · biomarkers<br/>risks · search_guidelines"]
+        api["<b>FastAPI</b><br/>async · RBAC · audit"]
+        pg[("Postgres<br/><i>clinical store</i>")]
+        rd[("Redis<br/><i>risk cache</i>")]
+        ml["<b>MLflow</b><br/>RiskRouter pyfunc<br/>5 models + SHAP"]
+        rag["Guideline corpus<br/><i>TF-IDF / MiniLM</i>"]
+    end
+
+    mcp --> api
+    api --> pg
+    api --> rd
+    api -->|"5 concurrent calls<br/>asyncio.gather"| ml
+    api --> rag
+    api -.->|"OTEL_ENABLED=true"| px["Phoenix<br/><i>PHI-scrubbed spans</i>"]
+
+    style guard fill:#fde8e8,stroke:#c53030,stroke-width:2px
+    style boundary fill:#fff5f5,stroke:#c53030,stroke-dasharray: 4 4
+    style px stroke-dasharray: 4 4
+```
+
+### Where each flag acts
+
+Every upgrade is additive and **defaults to the assignment's behaviour**. A fresh
+clone runs with no services at all.
+
+| Flag | Default | Acts on | Effect when changed |
+|---|---|---|---|
+| `DB_BACKEND` | `sqlite` | FastAPI → store | `postgres` — atomic dedupe via a partial unique index (compose sets this) |
+| `CACHE_BACKEND` | `none` | FastAPI → Redis | `redis` — content-addressed risk cache, fails open (compose sets this) |
+| `RBAC_MODE` | `clinic_wide` | FastAPI policy | `care_team` — restricts each actor to assigned patients |
+| `AUDIT_ENABLED` | `true` | FastAPI policy | every access decision recorded, denials included |
+| `RETRIEVAL_BACKEND` | `lexical` | search_guidelines | `embedding` — Chroma + MiniLM (`uv sync --extra rag`) |
+| `OTEL_ENABLED` | `false` | FastAPI + MCP | `true` + `--profile observability` — traces to Phoenix |
+| `GUARD_PHI_DEIDENTIFY` | `true` | Guard proxy | pseudonymise patient names before they leave |
+| `GUARD_PHI_FAIL_CLOSED` | `false` | Guard proxy | `true` — refuse traffic if the term list is unavailable |
+| `APP_ENV` | unset | MCP startup | any non-dev value refuses to boot on the default bearer token |
 
 ---
 
@@ -321,15 +427,48 @@ tier. Embeddings are implemented, tested and one config value away
 (`RETRIEVAL_BACKEND=embedding`); they earn their keep when the corpus grows. The
 protocol makes that a config change, not a rewrite.
 
-### Observability that cannot leak
+### Observability that cannot leak — OpenTelemetry, and how it is used
 
-Auto-instrumentation records URLs, query strings and exception messages as span
-attributes — so `?patient_id=P004` and lab values would land in a third-party
-dashboard, undoing the PHI work while *looking* like an improvement. The exporter
-is wrapped: allowlist (deny by default), query strings stripped, patient ids
-pseudonymised, span events dropped. Spans are **rebuilt, not mutated** —
-`ReadableSpan` is meant to be immutable, and editing private state fails silently
-on upgrade with PHI leakage as the failure mode.
+**Yes, it is wired and it works.** OpenTelemetry SDK with the FastAPI and httpx
+auto-instrumentations, OTLP/HTTP to **Arize Phoenix**, which ships as a compose
+service under the `observability` profile. Off by default (`OTEL_ENABLED=false`)
+so the graded path carries no extra runtime cost.
+
+```bash
+OTEL_ENABLED=true docker compose --profile observability up -d --wait
+# ask a question, then open http://localhost:6006
+```
+
+Two reasons it earns its place. First, **tracing is how the concurrency claim is
+proved rather than asserted**: one question becomes
+`mcp.tool → backend → cache → 5× mlflow → db.write`, and the five model calls
+either appear as sibling spans or they do not. Second, OTel is the vendor-neutral
+wire format, so Phoenix can be swapped for Langfuse or Tempo without touching
+application code.
+
+**The failure mode it exists to prevent.** Auto-instrumentation is enthusiastic:
+it records request URLs, query strings and exception messages as span attributes.
+That means `?patient_id=P004` and lab values land in a third-party dashboard —
+undoing the PHI work while *looking* like an improvement. So the exporter is
+wrapped: an attribute **allowlist** (deny by default, because a denylist is always
+one instrumentation release behind), query strings stripped, patient ids replaced
+with the same pseudonym the researcher role sees, and span events dropped
+wholesale. Spans are **rebuilt, not mutated** — `ReadableSpan` is meant to be
+immutable, and editing its private state fails silently on upgrade with PHI
+leakage as the failure mode.
+
+Verified on the wire rather than in the unit tests: with tracing on and a real
+risk request made, the spans Phoenix received contained **no** `P004`, no patient
+name, no `patient_id`, and no `egfr` — and the span name is
+`GET /api/v1/get_current_risks` with the query string already gone.
+
+*Found while verifying exactly that:* a YAML merge key does **not** deep-merge
+mappings, so every service that declared its own `environment:` block silently
+replaced the shared defaults — and `OTEL_ENABLED` lived only in the shared block.
+Tracing could not be switched on in Docker at all: Phoenix would start and no span
+would ever arrive. The variables are now declared per service, with a comment
+explaining the trap. It would never have shown up in a test; only in trying to use
+the feature.
 
 ---
 
@@ -467,19 +606,9 @@ uv run python evals/harness.py --tier both --repeats 3  # needs OPENROUTER_KEY
 
 ### Feature flags — reverting to the baseline
 
-**Every upgrade is additive and defaults to the assignment's behaviour.** A fresh
-clone runs `pytest` and host mode with **no services at all**:
-
-| Flag | Process default | Effect |
-|---|---|---|
-| `DB_BACKEND` | `sqlite` | `postgres` to use the SQLAlchemy/asyncpg store (compose sets this) |
-| `CACHE_BACKEND` | `none` | `redis` to enable the risk cache (compose sets this) |
-| `RBAC_MODE` | `clinic_wide` | `care_team` restricts to assigned patients |
-| `AUDIT_ENABLED` | `true` | every access decision recorded |
-| `RETRIEVAL_BACKEND` | `lexical` | `embedding` for Chroma/MiniLM |
-| `OTEL_ENABLED` | `false` | `true` + `--profile observability` for Phoenix |
-| `GUARD_PHI_DEIDENTIFY` | `true` | inbound name scrubbing |
-| `GUARD_PHI_FAIL_CLOSED` | `false` | refuse traffic if the term list is unavailable |
+The full table is in [Where each flag acts](#where-each-flag-acts). What matters
+here is that **every upgrade is additive**: a fresh clone runs `pytest` and host
+mode with no services at all.
 
 **To run exactly the baseline the brief describes** — SQLite file, no cache, no
 containers — use host mode, where `sqlite`/`none` are already the defaults:

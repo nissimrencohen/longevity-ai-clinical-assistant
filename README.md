@@ -1,5 +1,28 @@
 # Longevity AI — AI Engineer Take-Home
 
+> ## 📄 Reviewers: start with **[`SOLUTION.md`](SOLUTION.md)**
+>
+> This page is the original brief. My writeup is [`SOLUTION.md`](SOLUTION.md) —
+> what was built, why, how to run it, and an honest account of the trade-offs.
+> It opens with a 5-minute path.
+>
+> **Two commands to see it working:**
+> ```bash
+> cp .env.example .env && docker compose up -d --wait
+> uv run python evals/harness.py --tier a
+> ```
+> **Then run [`MANUAL_TESTS.md`](MANUAL_TESTS.md)** — 35 copy-paste chat queries
+> with an answer key verified against the database.
+>
+> Status: 332 tests · Tier A 100% · Tier B 96.4% · both bonus tracks done.
+>
+> ⚠️ Three things below diverge from what was actually built — the MCP port is
+> **9100** (9000 was taken), the MCP path has **no trailing slash** under FastMCP
+> 3.x, and everything runs in Docker rather than on the host.
+> [`SOLUTION.md` §3](SOLUTION.md#3-how-to-run-it-and-the-feature-flags) is
+> authoritative.
+
+
 Build the AI layer of a **clinical chat assistant**. The users are doctors in a
 single clinic (all doctors can see all patients). Through a chat UI they ask about
 a patient's biomarkers and disease risks; behind the chat, tools pull that
