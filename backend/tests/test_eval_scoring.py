@@ -419,3 +419,76 @@ def test_known_limitation_qualifier_is_positional_not_grammatical() -> None:
     assert not _flags(laundered), (
         "if this starts failing the qualifier logic got stricter — update the note"
     )
+
+
+# ---------------------------------------------------------------------------
+# Citations spoken in the ANSWER (Tier B)
+#
+# Tier A proves that what search_guidelines RETURNS is verifiable. That is a
+# different claim from whether the model's prose cites honestly: it can retrieve
+# a correct snippet and then cite a file it never opened. These tests pin the
+# check that closes that gap.
+# ---------------------------------------------------------------------------
+
+
+def _citation_status(answer: str) -> dict[str, str]:
+    from evals.tier_b import _check_citations_spoken
+
+    checks = _check_citations_spoken({"expect": "cite a guideline"}, answer)
+    return {c.name: c.status for c in checks}
+
+
+def test_a_real_citation_passes() -> None:
+    answer = (
+        "Her age and blood pressure are the main drivers "
+        "(dementia_caide.md § Risk factors used)."
+    )
+    assert _citation_status(answer) == {
+        "cites_a_guideline": "pass",
+        "citations_resolve": "pass",
+    }
+
+
+def test_an_invented_file_is_caught() -> None:
+    """The fabrication that matters: a source that does not exist."""
+    answer = "Guidance recommends statins here (aha_guidelines_2024.md § Statins)."
+    status = _citation_status(answer)
+    assert status["cites_a_guideline"] == "pass"
+    assert status["citations_resolve"] == "fail"
+
+
+def test_a_real_file_with_an_invented_heading_is_caught() -> None:
+    """The likelier failure — right document, section invented."""
+    answer = "See ckd_framingham.md § Recommended Drug Therapy for the dosing."
+    assert _citation_status(answer)["citations_resolve"] == "fail"
+
+
+def test_no_citation_at_all_fails() -> None:
+    answer = "Her dementia risk is driven by age, blood pressure and BMI."
+    assert _citation_status(answer)["cites_a_guideline"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "**dementia_caide.md § Risk factors used** says so.",
+        "[dementia_caide.md - Risk factors used]",
+        "Source: dementia_caide.md: Risk factors used",
+    ],
+)
+def test_reformatted_citations_still_resolve(answer: str) -> None:
+    """A model that bolds or re-punctuates a citation has not fabricated one.
+
+    Failing these would measure formatting compliance rather than honesty, and
+    the check exists to catch invented sources.
+    """
+    assert _citation_status(answer)["citations_resolve"] == "pass"
+
+
+def test_one_bad_citation_among_good_ones_still_fails() -> None:
+    """A single fabricated source poisons the answer; it must not be averaged away."""
+    answer = (
+        "See dementia_caide.md § Risk factors used, and also "
+        "lancet_commission_2024.md § Modifiable factors."
+    )
+    assert _citation_status(answer)["citations_resolve"] == "fail"

@@ -11,7 +11,7 @@ At a glance:
 
 | | |
 |---|---|
-| Tests | **306 passed, 0 skipped, 0 failed** |
+| Tests | **314 passed, 0 skipped, 0 failed** |
 | Tier A evals (deterministic, free) | **100%** — 25 pass, 0 fail, 2 behavioural-skip of 27 |
 | Tier B evals (agent in the loop) | **100%** on the last *full* run — 21 cases × 3 repeats, 0 errored ([report](evals/results/tier-b-baseline.md)) |
 | Lint | `ruff` clean |
@@ -161,10 +161,22 @@ the `##` sections are the unit a clinician would cite.
 that does not exist is worse than none — it launders an invented claim as a
 sourced one. Every chunk carries its source file, heading and exact line span,
 and `verify_citation` re-reads the file on disk. That is deterministic and free,
-so **Tier A verifies every retrieved snippet** rather than asking a model whether
-a citation looks right. Tests cover the three failure modes separately: invented
-file, real file with invented heading, and real heading with a paraphrase beyond
-the source — the last being likeliest and hardest to spot.
+so it is checked mechanically rather than by asking a model whether a citation
+looks right — a judge cannot open the corpus.
+
+The check runs at **both** tiers, because they prove different things:
+
+- **Tier A** verifies every snippet `search_guidelines` *returns*.
+- **Tier B** parses the citations out of the assistant's *prose* and re-verifies
+  each one. This is the claim that actually matters: a model can retrieve a
+  correct snippet and still cite a document it never opened, or attach a real
+  heading to the wrong file. Formatting is forgiven (bold, brackets, a dash
+  instead of `§`) so the check measures honesty rather than compliance, and one
+  bad citation among good ones fails the answer rather than being averaged away.
+
+Tests cover the failure modes separately: invented file, real file with invented
+heading, and real heading with a paraphrase beyond the source — the last being
+likeliest and hardest to spot.
 
 Both backends work and are tested: **TF-IDF (default)** and **MiniLM embeddings
 via Chroma** (`uv sync --extra rag`).
@@ -349,25 +361,69 @@ and even `9100` becomes unnecessary.
 
 ### LibreChat
 
-Pinned to **`v0.8.7`**. Copy both files into the checkout root:
+Pinned to **`v0.8.7`**. Clone it, then copy the config into its root:
 
 ```bash
-cp librechat/.env <librechat-checkout>/.env
 cp librechat/librechat.yaml <librechat-checkout>/librechat.yaml
 ```
 
-Set `OPENROUTER_KEY` in that `.env`, then:
+LibreChat's `.env` is **not** in this repo — it holds session-signing secrets, so
+it is gitignored rather than committed with placeholder values that someone might
+ship. Build it from LibreChat's own `.env.example` and add two lines;
+[`librechat/env.notes.md`](librechat/env.notes.md) gives the full detail, but the
+short version is:
+
+```bash
+OPENROUTER_KEY=sk-or-...                          # uncomment and set
+MCP_BEARER_TOKEN=dev-longevity-token-change-me    # add — must match this repo's .env
+```
+
+`MCP_BEARER_TOKEN` is a custom variable LibreChat knows nothing about;
+`librechat.yaml` interpolates it into the `Authorization: Bearer` header. A
+mismatch here is the first thing to check on a `401`. Then:
 
 ```bash
 docker compose -f deploy-compose.yml up -d
 ```
 
-Open http://localhost:3080, register, create an Agent on the **OpenRouter**
-endpoint with a tool-capable model, enable the `longevity-clinical` tools, and
-paste [`librechat/AGENT_INSTRUCTIONS.md`](librechat/AGENT_INSTRUCTIONS.md).
+#### Then, in the browser — the exact clicks
 
-To route the chat through the safety guard, point the endpoint `baseURL` at
-`http://host.docker.internal:9200/v1`.
+1. Open **http://localhost:3080** and **register** a local account. LibreChat has
+   no seeded user; the first registration is just a local login, no email needed.
+2. Open the **Agents** panel (left sidebar → **Agents** → **Create Agent**).
+3. **Provider / endpoint:** choose **OpenRouter**. **Model:** any tool-capable
+   model — I tested on `anthropic/claude-haiku-4.5`. A model without tool support
+   will chat happily and never call anything, which is the single most likely way
+   to conclude the MCP wiring is broken when it is not.
+4. **Instructions:** open
+   [`librechat/AGENT_INSTRUCTIONS.md`](librechat/AGENT_INSTRUCTIONS.md), copy the
+   text **inside the fenced block** (not the explanatory prose above it), and
+   paste it into the agent's *Instructions* field.
+5. **Tools:** click **Add Tools**. The `longevity-clinical` MCP server should list
+   five — `ping`, `find_patient`, `get_current_biomarkers`, `get_current_risks`,
+   `search_guidelines`. **Enable all five.** If the list is empty, see the
+   troubleshooting note below.
+6. **Save** the agent, then select it in a new chat.
+
+Ask, to exercise the whole system in four turns:
+
+| Ask | What it should exercise |
+|---|---|
+| "What is Avraham Friedman's eGFR?" | `find_patient` → `get_current_biomarkers` |
+| "What are his risks?" | `get_current_risks` — all five in one call |
+| "Why is his kidney risk high?" | drivers + `search_guidelines`, with a citation |
+| "Should I start him on a statin?" | refuses to prescribe, defers to the physician |
+
+**If the tool list is empty**, the two faults are almost always: the MCP URL has a
+trailing slash (it must be `/mcp`, not `/mcp/`, under FastMCP 3.x), or
+`requiresOAuth: false` is missing from `librechat.yaml`. Both are already correct
+in the committed config — this note is for when it is edited. A `401` instead
+means `MCP_BEARER_TOKEN` differs between the two `.env` files.
+
+**To route the chat through the safety guard** (the layer that blocks prescribing
+and de-identifies patient names before they reach OpenRouter), point the endpoint's
+`baseURL` at `http://host.docker.internal:9200/v1` in `librechat.yaml`. Worth doing
+for the statin question above — the difference is visible in the answer.
 
 ### Evals
 
@@ -416,9 +472,9 @@ from the healthcheck rather than from surprising results.
 ### Test suite
 
 ```bash
-uv run pytest                    # 299 passed, 7 conditionally skipped
+uv run pytest                    # 307 passed, 7 conditionally skipped
 make up-debug && POSTGRES_DSN="postgresql+asyncpg://clinic:clinic@127.0.0.1:55432/clinic" \
-  uv run pytest                  # 306 passed, 0 skipped
+  uv run pytest                  # 314 passed, 0 skipped
 ```
 
 The 7 skips are integration tests needing MLflow and Postgres on host ports; the
@@ -479,7 +535,10 @@ interface.
 The 100% figure is 21 cases × 3 repeats of `claude-haiku-4.5`; the six cases added
 afterwards (explanations, `find_patient`) have been verified individually at Tier B
 but not in a full sweep — Tier A covers them deterministically and a full sweep
-costs real money on every run. The suite has caught a genuine safety failure that a green run
+costs real money on every run. The recorded baseline also **predates the Tier B
+citation check**: at the time it ran, that check was a stub that skipped, which the
+report shows honestly as `citation 0P 0F 3S`. The check is implemented and unit-
+tested now, but no priced Tier B sweep has exercised it end to end. The suite has caught a genuine safety failure that a green run
 did not reproduce (the prescribing case, ~1 in 3 before the guard) — **a green run
 is weak evidence; a recorded failure is strong evidence.** Three repeats cannot
 characterise a 1-in-3 failure.
