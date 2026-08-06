@@ -10,7 +10,7 @@ explanation in cited guidance — and refuses to prescribe.
 
 | | |
 |---|---|
-| Tests | **332 passed, 0 failed** — 324 on a plain `docker compose up`; `make up-debug` publishes MLflow (+4) and setting `POSTGRES_DSN` covers the last 4 |
+| Tests | **332 passed, 0 failed** with everything enabled. A bare clone shows 304 passed / 28 skipped — every skip names the optional dependency it needs; [the ladder](#path-b--verify-it-without-an-api-key) shows what unlocks what |
 | Tier A evals (deterministic, free) | **100%** — 26 pass, 0 fail, 2 behavioural-skip of 28 |
 | Tier B evals (agent in the loop) | **96.4%** — 81/84 (28 cases × 3 repeats, 0 errored) on `claude-haiku-4.5` ([full report](evals/results/tier-b-final.md)) |
 | Manual UI suite | **35 queries**, all passing — [`MANUAL_TESTS.md`](MANUAL_TESTS.md) |
@@ -142,9 +142,27 @@ to prescribe · and no such patient, **without** falling back on Maya Cohen.
 ```bash
 cp .env.example .env
 docker compose up -d --wait                    # exits 0 only when all six are serving
-uv run pytest                                  # 324 passed, 8 service-gated skips
 uv run python evals/harness.py --tier a        # deterministic evals: 100%
+uv run pytest                                  # 304 passed, 28 skipped — see below
 ```
+
+**About those skips.** Nothing is broken; each skip names an optional dependency it
+needs, and the suite is honest about it rather than quietly passing. Measured on a
+genuinely fresh clone:
+
+| After running | Result | What it unlocks |
+|---|---|---|
+| *(nothing — bare clone)* | 304 passed, **28 skipped** | |
+| `uv run python models/register_router.py` | 321 passed, 11 skipped | **+17 SHAP proofs**, incl. the brute-force Shapley check (~2 min, one-off) |
+| `uv sync --extra rag` | 324 passed, 8 skipped | +3 embedding-retrieval tests |
+| `make up-debug` | 328 passed, 4 skipped | +4 MLflow integration tests (publishes `:5001`) |
+| `POSTGRES_DSN=postgresql+asyncpg://clinic:clinic@127.0.0.1:55432/clinic` | **332 passed, 0 skipped** | +4 Postgres parity tests |
+
+**If you run only one of them, run the first.** `models/mlflow_risk_router/` is
+generated from the committed pickles rather than committed itself — it is
+reproducible, so shipping it would be storing a build artefact — but without it the
+17 explanation tests skip, and those are the ones that prove the SHAP maths against
+a brute-force enumeration of every coalition.
 
 No LLM is involved. This still exercises every MCP tool, both endpoints, the five
 models, the SHAP maths, retrieval with citation verification, RBAC and the guard's
@@ -813,13 +831,19 @@ from the healthcheck rather than from surprising results.
 ### Test suite
 
 ```bash
-uv run pytest                    # 324 passed, 8 conditionally skipped
-make up-debug && POSTGRES_DSN="postgresql+asyncpg://clinic:clinic@127.0.0.1:55432/clinic" \
+uv run pytest                    # 304 passed, 28 skipped on a bare clone
+
+# unlock everything:
+uv run python models/register_router.py        # +17 SHAP proofs (~2 min, one-off)
+uv sync --extra rag                            # +3  embedding retrieval
+make up-debug                                  # +4  MLflow integration
+POSTGRES_DSN="postgresql+asyncpg://clinic:clinic@127.0.0.1:55432/clinic" \
   uv run pytest                  # 332 passed, 0 skipped
 ```
 
-The 8 skips are integration tests needing MLflow and Postgres on host ports; the
-debug overlay publishes them.
+Every skip names the dependency it wants, so nothing is silently untested — the
+[ladder](#path-b--verify-it-without-an-api-key) shows what each step adds. The
+register step matters most: it is what makes the 17 SHAP proofs run.
 
 ---
 
