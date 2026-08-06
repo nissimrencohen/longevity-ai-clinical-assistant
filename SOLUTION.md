@@ -659,6 +659,43 @@ risk request made, the spans Phoenix received contained **no** `P004`, no patien
 name, no `patient_id`, and no `egfr` — and the span name is
 `GET /api/v1/get_current_risks` with the query string already gone.
 
+#### Two vendor features I deliberately did not enable
+
+OpenRouter offers **Input & Output Logging** ("show prompts and completions in your
+logs") and **Broadcast** ("automatically send traces from your requests to external
+observability platforms"). Both are off, and that is a decision rather than an
+oversight.
+
+The whole PHI design says a real patient name never crosses the trust boundary,
+and the guard proxy makes that true. But the text that *does* cross is still
+clinical: biomarkers, probabilities, drug names, the reasoning about a specific
+person under a stable pseudonym. Turning on Input & Output Logging asks a vendor
+with no BAA to **retain** that content. Broadcast forwards it to a *second* vendor,
+inheriting whatever that one retains. Pseudonymisation lowers the severity; it does
+not make the data ordinary, and a stable pseudonym plus a clinical history is
+re-identifiable in ways a bare name is not.
+
+Our trace pipeline points the other way on purpose: Phoenix runs **inside** the
+private network, in the same compose project, and the spans reaching it are
+allowlisted and scrubbed. That is observability that cannot become an egress path.
+
+**The honest cost of that choice.** Our traces cover the MCP server and the backend
+— not the LLM call itself, because the guard proxy is a plain FastAPI app with no
+instrumentation. So latency and token usage for the model hop are not in Phoenix,
+and Broadcast is precisely the button that would fill that gap in one click. The
+right fix is to instrument the guard, which already sits on that path and already
+sees both sides of it, and export those spans to the same in-network collector.
+That keeps the data inside the boundary instead of trading privacy for convenience.
+
+**Phoenix's Evaluators** are a different question, and the answer is also no —
+for a duller reason. Its code evaluators are `exact_match` / `contains` / `regex`,
+which cannot express the checks that matter here: does this number trace to a tool
+result *for this patient*, does this citation resolve to real text at that heading,
+does the guard's own classifier fire on this sentence. Its LLM evaluators would
+reintroduce the instrument I measured at 32% agreement. What Phoenix would add is a
+UI over results and dataset versioning — real, but presentation rather than
+measurement, and the harness already writes a report per run.
+
 *Found while verifying exactly that:* a YAML merge key does **not** deep-merge
 mappings, so every service that declared its own `environment:` block silently
 replaced the shared defaults — and `OTEL_ENABLED` lived only in the shared block.
@@ -963,8 +1000,10 @@ the deployed system actually delivers. Neither is a judge's opinion. The judge i
 still used for open-ended behavioural cases, and remains unvalidated against human
 labels there.
 
-**Not done, and I would do next, in order:** validate the judge against my own
-labels; replace the drug lexicon with RxNorm; add `POST
+**Not done, and I would do next, in order:** instrument the guard proxy so the
+LLM hop appears in the same traces as everything else — it already sits on that
+path and sees both sides, and it is the one span Phoenix is missing; validate
+the judge against my own labels; replace the drug lexicon with RxNorm; add `POST
 /api/v1/patients/{id}/risk-computations` as the semantically correct write (the
 GET is idempotent-by-inputs, but it is still a GET that writes); wire the audit
 log to an append-only Postgres grant rather than relying on the application; and
